@@ -1,0 +1,136 @@
+{
+  "name": "Fresher Jobs to Google Sheets (HTTP API)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "2a3b4c5d-0001-4000-8000-000000000001",
+      "name": "Schedule Trigger (Set Interval Here)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://127.0.0.1:8000/jobs",
+        "options": {}
+      },
+      "id": "2a3b4c5d-0002-4000-8000-000000000002",
+      "name": "Fetch Latest Verified Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "jobs",
+        "options": {}
+      },
+      "id": "2a3b4c5d-0003-4000-8000-000000000003",
+      "name": "Split Jobs into Rows",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Verified Fresher Jobs",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Job Title": "={{ $json.title }}",
+            "Company": "={{ $json.company }}",
+            "Location": "={{ $json.location }}",
+            "Role": "={{ $json.tech_category }}",
+            "Date Posted": "={{ $json.date_posted }}",
+            "Experience": "={{ $json.experience_range || 'Fresher' }}",
+            "Min Salary": "={{ $json.min_amount }}",
+            "Max Salary": "={{ $json.max_amount }}",
+            "Apply URL": "={{ $json.job_url_direct || $json.job_url }}",
+            "Source": "={{ $json.site }}",
+            "Score": "={{ $json.quality_score }}",
+            "Last Updated": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [
+            "Apply URL"
+          ]
+        },
+        "options": {}
+      },
+      "id": "2a3b4c5d-0004-4000-8000-000000000004",
+      "name": "Update Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        920,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (Set Interval Here)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Latest Verified Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Latest Verified Jobs": {
+      "main": [
+        [
+          {
+            "node": "Split Jobs into Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Jobs into Rows": {
+      "main": [
+        [
+          {
+            "node": "Update Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+work/
+
+# Local secrets and credentials
+.env
+credentials.json
+*.pem
+*.key
+
+# Local runtime artifacts (kept on disk but not committed)
+output/*
+!output/.gitkeep

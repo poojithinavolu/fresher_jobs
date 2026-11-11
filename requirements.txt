@@ -1,0 +1,21 @@
+# ==============================================================================
+# Fresher Job Intelligence & Placement Pipeline - Dependencies
+# ==============================================================================
+
+# Core Multi-Board Scraper & Data Manipulation
+python-jobspy>=1.4.1,<2.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+requests>=2.28.0
+
+# REST API & Tracked Short Redirect Server
+fastapi>=0.100.0
+uvicorn>=0.22.0
+
+# Google Sheets Direct Python Integration
+gspread>=5.10.0
+google-auth>=2.20.0
+python-dotenv>=1.0.0
+
+# PostgreSQL 16 Driver (Optional - SQLite fallback included)
+psycopg2-binary>=2.9.0

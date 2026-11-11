@@ -1,0 +1,79 @@
+# ==============================================================================
+# Fresher Job Intelligence & Student Placement Pipeline
+# Hostinger VPS / Docker Compose Production Stack
+# Design Reference: "n8n Community on Hostinger - Postgres - Google Sheets"
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. PostgreSQL 16 (Source of Truth)
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: fresher_jobs_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fresher_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeThisPassword123!}
+      POSTGRES_DB: ${POSTGRES_DB:-fresher_jobs_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/init_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fresher_admin} -d ${POSTGRES_DB:-fresher_jobs_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # 2. n8n Community (Workflow Orchestrator)
+  # ----------------------------------------------------------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: fresher_jobs_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=${SUBDOMAIN:-n8n}.${DOMAIN_NAME:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - WEBHOOK_URL=https://${SUBDOMAIN:-n8n}.${DOMAIN_NAME:-localhost}/
+      - GENERIC_TIMEZONE=Asia/Kolkata
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-fresher_jobs_db}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER:-fresher_admin}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-ChangeThisPassword123!}
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=336
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./output:/home/node/output
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # 3. Uptime Kuma (Observe & Control: Disk, Cert, API Monitor)
+  # ----------------------------------------------------------------------------
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: fresher_jobs_uptime
+    restart: always
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime_data:/app/data
+
+volumes:
+  postgres_data:
+  n8n_data:
+  uptime_data:

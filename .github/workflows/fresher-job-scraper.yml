@@ -1,0 +1,76 @@
+name: Fresher job scrape
+
+on:
+  # 11:00 and 16:00 Asia/Kolkata (GitHub schedules use UTC).
+  schedule:
+    - cron: "30 5,10 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "Hours of job history to fetch (run 48 once for the initial fill)"
+        required: true
+        type: choice
+        default: "48"
+        options:
+          - "48"
+          - "20"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fresher-job-scraper
+  cancel-in-progress: false
+
+jobs:
+  scrape-and-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
+      GOOGLE_SERVICE_ACCOUNT_FILE: credentials.json
+
+    steps:
+      - name: Verify Google Sheets secrets are configured
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          test -n "$GOOGLE_SPREADSHEET_ID" || { echo "Missing repository secret: GOOGLE_SPREADSHEET_ID"; exit 1; }
+          test -n "$GOOGLE_SERVICE_ACCOUNT_JSON" || { echo "Missing repository secret: GOOGLE_SERVICE_ACCOUNT_JSON"; exit 1; }
+
+      - name: Check out project
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Create Google service-account key
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          key = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+          parsed = json.loads(key)
+          if parsed.get("type") != "service_account":
+              raise SystemExit("GOOGLE_SERVICE_ACCOUNT_JSON must be a service-account JSON key")
+          Path("credentials.json").write_text(key, encoding="utf-8")
+          PY
+
+      - name: Run scheduled 20-hour scrape and sync
+        if: github.event_name == 'schedule'
+        run: python -u main.py --hours 20
+
+      - name: Run requested initial/manual scrape and sync
+        if: github.event_name == 'workflow_dispatch'
+        run: python -u main.py --hours "${{ inputs.lookback_hours }}"
