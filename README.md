@@ -28,7 +28,7 @@ Copy `.env.example` to `.env`, set `GOOGLE_SPREADSHEET_ID`, and keep the service
 
 ### GitHub Actions schedule
 
-The `.github/workflows/fresher-job-scraper.yml` workflow runs daily at 11:00 and 16:00 India time (GitHub cron is UTC). Scheduled runs use a 20-hour lookback; run it once manually with 48 hours for the initial fill. Add repository Actions secrets named `GOOGLE_SPREADSHEET_ID` and `GOOGLE_SERVICE_ACCOUNT_JSON` (the full service-account JSON contents). The workflow writes the JSON to the ignored `credentials.json` file only during the run.
+The `.github/workflows/fresher-job-scraper.yml` workflow runs daily at 11:00 and 16:00 India time (GitHub cron is UTC). Scheduled runs use a 20-hour lookback; run it once manually with 48 hours for the initial fill. Add repository Actions secrets named `GOOGLE_SPREADSHEET_ID` and `GOOGLE_SERVICE_ACCOUNT_JSON` (the full service-account JSON contents). The workflow writes the JSON to the ignored `credentials.json` file only during the run and commits a small success timestamp so GitHub does not disable this public repo's schedule for inactivity.
 
 If Naukri rate-limits the current network, set `JOBSPY_PROXIES` in the process environment to a comma-separated list of JobSpy-compatible proxy URLs before running the scraper. Proxy credentials are not stored in project files.
 

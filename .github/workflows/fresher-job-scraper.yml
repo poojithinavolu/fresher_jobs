@@ -16,7 +16,7 @@ on:
           - "20"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: fresher-job-scraper
@@ -74,3 +74,15 @@ jobs:
       - name: Run requested initial/manual scrape and sync
         if: github.event_name == 'workflow_dispatch'
         run: python -u main.py --hours "${{ inputs.lookback_hours }}"
+
+      # This public repository's schedule can be disabled after 60 days without
+      # repository activity. Record each successful run to keep it active.
+      - name: Record successful run
+        if: success()
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/last-successful-run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/last-successful-run.txt
+          git commit -m "Record successful scraper run"
+          git push

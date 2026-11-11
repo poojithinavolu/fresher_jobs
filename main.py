@@ -509,9 +509,10 @@ def main():
             json.dump([], f)
         print("\n[!] No jobs passed the strict fresher/freshness criteria in this cycle.")
 
-    # 2a. Replace the live sheet snapshot after every completed scrape.
+    # 2a. Upsert this run's jobs into the live sheet while retaining prior results.
     synced = sync_configured_google_sheet(valid_jobs, hr_leads=hr_leads)
-    if synced is False:
+    sync_failed = synced is False
+    if sync_failed:
         print("[!] Google Sheets sync did not complete; local exports are still available.")
 
     # 2. Save Rejected Jobs Log (for transparency and audit)
@@ -559,6 +560,9 @@ def main():
             print(f"     Posted: {j.get('date_posted')} | Experience: {j.get('experience_range') or 'Fresher'}")
             print(f"     Apply URL: {url}")
         print("\n" + "=" * 70)
+
+    if sync_failed:
+        raise SystemExit("Google Sheets synchronization failed.")
 
 
 if __name__ == "__main__":
