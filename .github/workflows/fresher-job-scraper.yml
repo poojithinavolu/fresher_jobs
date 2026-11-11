@@ -20,7 +20,8 @@ permissions:
 
 concurrency:
   group: fresher-job-scraper
-  cancel-in-progress: false
+  # A new scheduled run must not be blocked by a stale runner status.
+  cancel-in-progress: true
 
 jobs:
   scrape-and-sync:
