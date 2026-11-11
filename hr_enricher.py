@@ -10,14 +10,31 @@ Outputs:
 """
 
 import re
+import math
+import numbers
 import urllib.parse
 from typing import Dict, Any, List, Optional
 import requests
 
 GENERIC_HR_PREFIXES = ["careers", "hr", "talent", "recruitment", "hiring", "jobs"]
 
+
+def _safe_text(value: Any, default: str = "") -> str:
+    """Normalize scraped values before string operations (JobSpy may return NaN)."""
+    if value is None:
+        return default
+    if isinstance(value, numbers.Number):
+        try:
+            if not math.isfinite(float(value)):
+                return default
+        except (TypeError, ValueError, OverflowError):
+            return default
+    text = str(value).strip()
+    return default if text.casefold() in {"", "nan", "nat", "none", "<na>"} else text
+
 def clean_company_name(name: str) -> str:
     """Removes legal suffixes and noise from company names."""
+    name = _safe_text(name)
     if not name:
         return ""
     cleaned = re.sub(
@@ -54,8 +71,8 @@ def enrich_job_with_hr(job: Dict[str, Any], hunter_api_key: Optional[str] = None
     """
     Enriches a single job listing with HR email, company domain, and 1-click HR search links.
     """
-    company = job.get("company", "").strip()
-    location = job.get("location", "India")
+    company = _safe_text(job.get("company"))
+    location = _safe_text(job.get("location"), "India")
     domain = guess_company_domain(company)
     
     hr_email = ""
@@ -63,7 +80,7 @@ def enrich_job_with_hr(job: Dict[str, Any], hunter_api_key: Optional[str] = None
     confidence = "Pattern"
     
     # 1. Check if description has an email explicitly mentioned
-    desc = job.get("description", "") or ""
+    desc = _safe_text(job.get("description"))
     found_emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", desc)
     valid_emails = [
         e for e in found_emails 
@@ -89,7 +106,7 @@ def enrich_job_with_hr(job: Dict[str, Any], hunter_api_key: Optional[str] = None
                 emails = data.get("emails", [])
                 if emails:
                     first = emails[0]
-                    hr_email = first.get("value", "")
+                    hr_email = _safe_text(first.get("value"))
                     confidence = "Hunter.io Verified"
         except Exception:
             pass
@@ -103,15 +120,15 @@ def enrich_job_with_hr(job: Dict[str, Any], hunter_api_key: Optional[str] = None
     
     return {
         "company": company,
-        "job_title": job.get("title", ""),
+        "job_title": _safe_text(job.get("title")),
         "location": location,
-        "tech_category": job.get("tech_category", "Tech"),
+        "tech_category": _safe_text(job.get("tech_category"), "Tech"),
         "hr_email": hr_email,
         "hr_phone": hr_phone,
         "hr_source": confidence,
-        "apply_url": job.get("job_url_direct") or job.get("job_url", ""),
-        "source": job.get("site", ""),
-        "date_posted": job.get("date_posted", ""),
+        "apply_url": _safe_text(job.get("job_url_direct")) or _safe_text(job.get("job_url")),
+        "source": _safe_text(job.get("site")),
+        "date_posted": _safe_text(job.get("date_posted")),
         "linkedin_hr_search": dorks["linkedin_hr_search_url"],
         "phone_search": dorks["phone_search_url"],
         "call_status": "Pending",
@@ -124,7 +141,7 @@ def process_hr_enrichment(jobs: List[Dict[str, Any]], hunter_api_key: Optional[s
     hr_records = []
     
     for job in jobs:
-        comp = job.get("company", "").strip().lower()
+        comp = _safe_text(job.get("company")).lower()
         if not comp or comp in seen_companies:
             continue
         seen_companies.add(comp)

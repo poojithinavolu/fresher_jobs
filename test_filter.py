@@ -156,6 +156,22 @@ def test_nan_salary_metadata_does_not_crash_filtering():
     assert "nan" not in result["salary_display"].lower()
 
 
+def test_hr_enrichment_tolerates_missing_or_nan_listing_text():
+    from hr_enricher import enrich_job_with_hr, process_hr_enrichment
+
+    result = enrich_job_with_hr({
+        "company": "Acme",
+        "location": "Mumbai",
+        "description": float("nan"),
+        "title": "Analyst",
+        "tech_category": "Analyst",
+    })
+    assert result["company"] == "Acme"
+    assert result["location"] == "Mumbai"
+    assert result["hr_email"] == "careers@acme.com"
+    assert len(process_hr_enrichment([{"company": float("nan"), "description": float("nan")}])) == 0
+
+
 def test_naukri_uses_deeper_fetch_than_quick_mode(monkeypatch):
     import pandas as pd
     import scraper
