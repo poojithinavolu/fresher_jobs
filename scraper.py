@@ -8,6 +8,7 @@ Includes error-isolation, pacing, deduplication, and quality evaluation.
 
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from threading import RLock
 from typing import List, Dict, Any, Optional
 import pandas as pd
@@ -60,12 +61,11 @@ def run_scraping_query(
     proxies: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
-    Executes a single scrape_jobs call across target boards with error handling.
+    Scrapes boards concurrently, with at most one active request per board.
     """
     logger.info(f"Scraping -> Query: '{search_term}' | Location: '{location}' | Sites: {sites} | Hours: {hours_old}")
-    frames = []
-    site_errors = {}
-    for site in sites:
+
+    def scrape_one_site(site: str) -> tuple[str, pd.DataFrame, Optional[str]]:
         try:
             call = lambda: scrape_jobs(
                 site_name=[site], search_term=search_term, location=location,
@@ -92,12 +92,32 @@ def run_scraping_query(
             warnings = (getattr(df, "attrs", {}) or {}).get("warnings", {})
             if site in warnings:
                 logger.warning("JobSpy warning for %s: %s", site, warnings[site])
-            logger.info("Fetched %s listings from %s", len(df), site)
-            if not df.empty:
-                frames.append(df)
+            return site, df, str(errors[site]) if site in errors else None
         except Exception as exc:
-            site_errors[site] = str(exc)
             logger.warning("Scraper failed for %s (%s, %s): %s", site, search_term, location, exc)
+
+            # Keep failures isolated to this board so another board's results
+            # still reach filtering and the sheet sync.
+            return site, pd.DataFrame(), str(exc)
+
+    if len(sites) > 1:
+        # The caller waits for this batch before starting the next query, so
+        # each board has at most one in-flight request and keeps its normal
+        # per-query pacing. Network waits across independent boards overlap.
+        with ThreadPoolExecutor(max_workers=len(sites)) as executor:
+            site_results = list(executor.map(scrape_one_site, sites))
+    else:
+        site_results = [scrape_one_site(site) for site in sites]
+
+    frames = []
+    site_errors = {}
+    for site, df, error in site_results:
+        if error:
+            site_errors[site] = error
+        logger.info("Fetched %s listings from %s", len(df), site)
+        if not df.empty:
+            frames.append(df)
+
     nonempty = [frame.dropna(axis="columns", how="all") for frame in frames if not frame.empty]
     result = pd.concat(nonempty, ignore_index=True) if nonempty else pd.DataFrame()
     result.attrs["site_errors"] = site_errors

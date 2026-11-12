@@ -190,6 +190,57 @@ def test_all_boards_use_the_same_per_query_result_limit(monkeypatch):
     assert [call["results_wanted"] for call in calls] == [25, 25, 25]
 
 
+def test_board_requests_run_concurrently_without_same_board_overlap(monkeypatch):
+    import threading
+    import pandas as pd
+    import scraper
+
+    barrier = threading.Barrier(3)
+    lock = threading.Lock()
+    active = 0
+    peak_active = 0
+
+    def fake_scrape_jobs(**kwargs):
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        try:
+            barrier.wait(timeout=2)
+            return pd.DataFrame()
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(scraper, "scrape_jobs", fake_scrape_jobs)
+    scraper.run_scraping_query(
+        "data analyst fresher", "Mumbai",
+        sites=["naukri", "indeed", "linkedin"], results_wanted=25,
+    )
+
+    assert peak_active == 3
+
+
+def test_one_board_failure_does_not_discard_other_board_results(monkeypatch):
+    import pandas as pd
+    import scraper
+
+    def fake_scrape_jobs(**kwargs):
+        site = kwargs["site_name"][0]
+        if site == "indeed":
+            raise RuntimeError("temporary Indeed failure")
+        return pd.DataFrame([{"site": site, "title": "Data Analyst"}])
+
+    monkeypatch.setattr(scraper, "scrape_jobs", fake_scrape_jobs)
+    result = scraper.run_scraping_query(
+        "data analyst fresher", "Mumbai",
+        sites=["naukri", "indeed", "linkedin"], results_wanted=25,
+    )
+
+    assert set(result["site"]) == {"naukri", "linkedin"}
+    assert result.attrs["site_errors"] == {"indeed": "temporary Indeed failure"}
+
+
 def test_cross_board_duplicates_are_kept_with_their_own_sources(monkeypatch):
     import pandas as pd
     import scraper
