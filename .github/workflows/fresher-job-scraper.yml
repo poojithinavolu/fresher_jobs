@@ -1,13 +1,11 @@
 name: Fresher job scrape
 
 on:
-  # 11:00 and 16:00 IST. Temporary 12:15 IST entry verifies scheduler registration.
+  # 11:00 and 16:00 IST.
   schedule:
     - cron: "0 11 * * *"
       timezone: "Asia/Kolkata"
     - cron: "0 16 * * *"
-      timezone: "Asia/Kolkata"
-    - cron: "15 12 * * *"
       timezone: "Asia/Kolkata"
   workflow_dispatch:
     inputs:

@@ -10,7 +10,7 @@ The jobs tab uses 11 columns: Job Title, Company, Location, Role, Date Posted, E
 
 ## GitHub Actions
 
-The workflow at `.github/workflows/fresher-job-scraper.yml` is intended to run at **11:00 AM and 4:00 PM IST**. Scheduled runs search the previous 20 hours; manual runs can use 20 or 48 hours. It reads the spreadsheet ID and service-account JSON from repository secrets, runs the scraper, and records a small commit after success. A temporary 12:15 PM IST schedule entry is being used to test/refresh GitHub's schedule registration because no scheduled events had appeared in Actions history.
+The workflow at `.github/workflows/fresher-job-scraper.yml` is intended to run at **11:00 AM and 4:00 PM IST**. Scheduled runs search the previous 20 hours; manual runs can use 20 or 48 hours. It reads the spreadsheet ID and service-account JSON from repository secrets, runs the scraper, and records a small commit after success. GitHub currently reports no scheduled runs for this workflow; manual runs have succeeded. Scheduled timing is best-effort.
 
 ## Changes made
 
