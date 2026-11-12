@@ -1,9 +1,14 @@
 name: Fresher job scrape
 
 on:
-  # 11:00 and 16:00 Asia/Kolkata (GitHub schedules use UTC).
+  # 11:00 and 16:00 IST. Temporary 11:15 IST entry refreshes/tests scheduling.
   schedule:
-    - cron: "30 5,10 * * *"
+    - cron: "0 11 * * *"
+      timezone: "Asia/Kolkata"
+    - cron: "0 16 * * *"
+      timezone: "Asia/Kolkata"
+    - cron: "15 11 * * *"
+      timezone: "Asia/Kolkata"
   workflow_dispatch:
     inputs:
       lookback_hours:
