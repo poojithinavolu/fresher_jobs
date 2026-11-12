@@ -533,10 +533,16 @@ def main():
     print(f" ❌ Rejected (Filtered):  {stats['rejected_jobs_count']}")
 
     print("\n Breakdown by Platform:")
-    for site in sorted(set(stats.get("raw_by_site", {})) | set(stats["by_site"]) | set(stats.get("site_errors", {}))):
+    for site in sorted(
+        set(stats.get("raw_by_site", {}))
+        | set(stats["by_site"])
+        | set(stats.get("site_errors", {}))
+        | set(stats.get("site_queries_attempted", {}))
+    ):
         fetched = stats.get("raw_by_site", {}).get(site, 0)
         kept = stats["by_site"].get(site, 0)
-        print(f"   • {site.capitalize()}: fetched {fetched}, verified {kept}")
+        attempts = stats.get("site_queries_attempted", {}).get(site, 0)
+        print(f"   • {site.capitalize()}: {attempts} query/location calls; fetched {fetched}, verified {kept}")
         for error in stats.get("site_errors", {}).get(site, []):
             print(f"       scraper error: {error}")
 

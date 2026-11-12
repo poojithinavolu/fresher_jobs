@@ -30,9 +30,6 @@ INDEED_COUNTRY: str = "india"
 
 # Maximum raw results to fetch per (query, location, site) combination
 RESULTS_PER_QUERY: int = 25
-# Naukri's JobSpy adapter has no native experience filter, so collect multiple
-# result pages before applying the strict local experience rules.
-NAUKRI_RESULTS_PER_QUERY: int = 60
 
 # Pacing delay between queries in seconds (helps avoid rate limits)
 QUERY_DELAY_SECONDS: float = 5.0

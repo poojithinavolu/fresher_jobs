@@ -4,7 +4,7 @@ A Python JobSpy pipeline for recent entry-level openings in India.
 
 ## Active sources
 
-The primary CLI (`main.py`) queries **Naukri, Indeed, and LinkedIn** separately for fault isolation. Search phrases include plain role names and fresher/junior variants. JobSpy has no public experience argument, so the Naukri adapter extension sends Naukri's separate `experience=0` filter and the project verifies each returned job's experience afterward. Naukri fetches up to 60 results per query. JobSpy currently has no Monster India / JobsAhead adapter; it is not included as a supported source. JobSpy's supported sites are documented in its [upstream README](https://github.com/speedyapply/JobSpy/blob/main/README.md).
+The primary CLI (`main.py`) queries **Naukri, Indeed, and LinkedIn** separately for fault isolation, using the same search phrases, locations, and per-query result limit for each board. Search phrases include plain role names and fresher/junior variants. JobSpy has no public experience argument, so the Naukri adapter extension sends Naukri's separate `experience=0` filter and the project verifies each returned job's experience afterward. Deduplication is scoped to each source so an earlier board cannot suppress a matching listing from another board. JobSpy currently has no Monster India / JobsAhead adapter; it is not included as a supported source. JobSpy's supported sites are documented in its [upstream README](https://github.com/speedyapply/JobSpy/blob/main/README.md).
 
 ## Target rules
 

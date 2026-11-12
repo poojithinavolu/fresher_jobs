@@ -22,7 +22,6 @@ from config import (
     DEFAULT_LOCATIONS,
     INDEED_COUNTRY,
     RESULTS_PER_QUERY,
-    NAUKRI_RESULTS_PER_QUERY,
     QUERY_DELAY_SECONDS,
     JOBSPY_PROXIES,
     ROLE_QUERIES,
@@ -68,10 +67,9 @@ def run_scraping_query(
     site_errors = {}
     for site in sites:
         try:
-            site_limit = max(results_wanted, NAUKRI_RESULTS_PER_QUERY) if site == "naukri" else results_wanted
             call = lambda: scrape_jobs(
                 site_name=[site], search_term=search_term, location=location,
-                results_wanted=site_limit, hours_old=hours_old,
+                results_wanted=results_wanted, hours_old=hours_old,
                 country_indeed=INDEED_COUNTRY, proxies=proxies,
                 fetch_description=True, verbose=0,
             )
@@ -98,6 +96,7 @@ def run_scraping_query(
             if not df.empty:
                 frames.append(df)
         except Exception as exc:
+            site_errors[site] = str(exc)
             logger.warning("Scraper failed for %s (%s, %s): %s", site, search_term, location, exc)
     nonempty = [frame.dropna(axis="columns", how="all") for frame in frames if not frame.empty]
     result = pd.concat(nonempty, ignore_index=True) if nonempty else pd.DataFrame()
@@ -130,12 +129,15 @@ def scrape_fresher_jobs(
     start_time = time.time()
     query_count = 0
     site_errors: Dict[str, List[str]] = {}
+    site_queries_attempted = {site: 0 for site in target_sites}
 
     for role_category, queries in target_roles.items():
         logger.info(f"\n==================== Category: {role_category} ====================")
         for search_query in queries:
             for loc in target_locations:
                 query_count += 1
+                for site in target_sites:
+                    site_queries_attempted[site] = site_queries_attempted.get(site, 0) + 1
                 df = run_scraping_query(
                     search_term=search_query,
                     location=loc,
@@ -163,15 +165,25 @@ def scrape_fresher_jobs(
     rejected_jobs: List[Dict[str, Any]] = []
 
     for raw_job in all_raw_jobs:
-        # 1. URL Deduplication
-        job_url = raw_job.get("job_url_direct") or raw_job.get("job_url") or ""
-        if job_url and job_url in seen_urls:
-            continue
-        if job_url:
-            seen_urls.add(job_url)
+        # Deduplicate within each board. Keep cross-board copies so the first
+        # site in TARGET_SITES cannot silently take ownership of the listing.
+        source = clean_str(raw_job.get("site")) or "unknown"
 
-        # 2. Composite Key Deduplication (Title + Company + City)
-        comp_key = f"{clean_str(raw_job.get('title'))}_{clean_str(raw_job.get('company'))}_{clean_str(raw_job.get('location'))}"
+        # 1. URL Deduplication (site-aware)
+        job_url = raw_job.get("job_url_direct") or raw_job.get("job_url") or ""
+        url_key = (source, str(job_url).strip().casefold()) if job_url else None
+        if url_key and url_key in seen_urls:
+            continue
+        if url_key:
+            seen_urls.add(url_key)
+
+        # 2. Composite Key Deduplication (site + Title + Company + City)
+        comp_key = (
+            source,
+            clean_str(raw_job.get("title")),
+            clean_str(raw_job.get("company")),
+            clean_str(raw_job.get("location")),
+        )
         if comp_key in seen_composite_keys:
             continue
         seen_composite_keys.add(comp_key)
@@ -199,6 +211,7 @@ def scrape_fresher_jobs(
         "by_location": {},
         "site_errors": {site: sorted(set(errors)) for site, errors in site_errors.items()},
         "raw_by_site": {},
+        "site_queries_attempted": site_queries_attempted,
     }
 
     for raw in all_raw_jobs:

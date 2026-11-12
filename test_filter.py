@@ -172,7 +172,7 @@ def test_hr_enrichment_tolerates_missing_or_nan_listing_text():
     assert len(process_hr_enrichment([{"company": float("nan"), "description": float("nan")}])) == 0
 
 
-def test_naukri_uses_deeper_fetch_than_quick_mode(monkeypatch):
+def test_all_boards_use_the_same_per_query_result_limit(monkeypatch):
     import pandas as pd
     import scraper
 
@@ -183,8 +183,43 @@ def test_naukri_uses_deeper_fetch_than_quick_mode(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(scraper, "scrape_jobs", fake_scrape_jobs)
-    scraper.run_scraping_query("data analyst fresher", "Mumbai", sites=["naukri"], results_wanted=5)
-    assert calls[0]["results_wanted"] >= 60
+    scraper.run_scraping_query(
+        "data analyst fresher", "Mumbai",
+        sites=["naukri", "indeed", "linkedin"], results_wanted=25,
+    )
+    assert [call["results_wanted"] for call in calls] == [25, 25, 25]
+
+
+def test_cross_board_duplicates_are_kept_with_their_own_sources(monkeypatch):
+    import pandas as pd
+    import scraper
+
+    now = datetime.now()
+    same_listing = {
+        "title": "Data Analyst Fresher",
+        "company": "Acme",
+        "location": "Mumbai",
+        "date_posted": now - timedelta(hours=2),
+        "experience_range": "0-1 Yrs",
+        "description": "Entry-level role",
+    }
+    rows = [
+        dict(same_listing, site=site, job_url=f"https://{site}.example/jobs/1")
+        for site in ["naukri", "indeed", "linkedin"]
+    ]
+    monkeypatch.setattr(scraper, "run_scraping_query", lambda **kwargs: pd.DataFrame(rows))
+    monkeypatch.setattr(scraper.time, "sleep", lambda *_: None)
+
+    result = scraper.scrape_fresher_jobs(
+        locations=["Mumbai"],
+        roles_dict={"Data Analyst": ["data analyst fresher"]},
+        sites=["naukri", "indeed", "linkedin"],
+    )
+
+    assert {job["site"] for job in result["valid_jobs"]} == {"naukri", "indeed", "linkedin"}
+    assert result["stats"]["site_queries_attempted"] == {
+        "naukri": 1, "indeed": 1, "linkedin": 1,
+    }
 
 
 def test_naukri_experience_is_a_separate_search_parameter():
