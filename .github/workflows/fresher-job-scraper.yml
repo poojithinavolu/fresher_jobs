@@ -1,9 +1,9 @@
 name: Fresher job scrape
 
 on:
-  # Temporary 07:35 test plus 11:00 and 16:00 Asia/Kolkata (UTC).
+  # Temporary 08:00 test plus 11:00 and 16:00 Asia/Kolkata (UTC).
   schedule:
-    - cron: "5 2,5,10 * * *"
+    - cron: "30 2,5,10 * * *"
   workflow_dispatch:
     inputs:
       lookback_hours:
