@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional, TypedDict
 from urllib.parse import urlsplit
@@ -37,6 +38,15 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+def _configured_completion_limit() -> int:
+    try:
+        configured = int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "4096"))
+    except (TypeError, ValueError):
+        configured = 4096
+    return max(1024, min(configured, 8192))
+
+
+LLM_MAX_COMPLETION_TOKENS = _configured_completion_limit()
 
 logger = logging.getLogger("agentic_pipeline")
 if not logger.handlers:
@@ -136,7 +146,12 @@ def get_configured_llm() -> tuple[Any, str]:
             from langchain_groq import ChatGroq
             model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
             logger.info(f"Using Groq LLM: {model_name}")
-            return ChatGroq(api_key=groq_key, model_name=model_name, temperature=0.15), "groq"
+            return ChatGroq(
+                api_key=groq_key,
+                model_name=model_name,
+                temperature=0.15,
+                max_tokens=LLM_MAX_COMPLETION_TOKENS,
+            ), "groq"
         except Exception as exc:
             logger.error(f"Failed to initialize ChatGroq: {exc}")
             raise
@@ -155,6 +170,7 @@ def get_configured_llm() -> tuple[Any, str]:
                 base_url="https://openrouter.ai/api/v1",
                 model=model_name,
                 temperature=0.15,
+                max_tokens=LLM_MAX_COMPLETION_TOKENS,
                 default_headers={
                     "HTTP-Referer": "https://github.com/placement-prep/fresher-job-scraper",
                     "X-Title": "Professional Placement Interview Dossier Engine",
@@ -238,34 +254,82 @@ def extract_json_object(text: str) -> dict[str, Any]:
 
 
 def extract_json_array(text: str) -> list[dict[str, Any]]:
-    """Robustly extracts a JSON array of question objects from LLM output."""
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text)
-    text = text.strip()
+    """Extract a JSON array or recognized wrapper, reporting malformed output."""
+    if not isinstance(text, str):
+        raise ValueError(f"Expected text response, received {type(text).__name__}")
+    text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text).strip()
 
-    try:
-        data = json.loads(text)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ["questions", "questions_and_answers", "qna", "items", "interview_questions"]:
-                if key in data and isinstance(data[key], list):
-                    return data[key]
-    except Exception:
-        pass
-
-    start = text.find("[")
-    end = text.rfind("]")
-    if start != -1 and end != -1 and end > start:
+    decoder = json.JSONDecoder()
+    errors: list[json.JSONDecodeError] = []
+    for start, char in enumerate(text):
+        if char not in "[{":
+            continue
         try:
-            data = json.loads(text[start : end + 1])
+            data, _ = decoder.raw_decode(text[start:])
             if isinstance(data, list):
                 return data
-        except Exception:
-            pass
+            if isinstance(data, dict):
+                for key in ("questions", "questions_and_answers", "qna", "items", "interview_questions"):
+                    if key in data and isinstance(data[key], list):
+                        return data[key]
+        except json.JSONDecodeError as exc:
+            errors.append(exc)
 
-    return []
+    # Truncation Recovery: If generation stopped mid-array due to max_tokens,
+    # find the last closed '}' object and append ']'
+    first_bracket = text.find("[")
+    if first_bracket != -1:
+        truncated_slice = text[first_bracket:]
+        last_brace = truncated_slice.rfind("}")
+        while last_brace > 0:
+            candidate = truncated_slice[: last_brace + 1].strip()
+            candidate = re.sub(r",\s*$", "", candidate) + "\n]"
+            try:
+                candidate = re.sub(r",\s*([\]}])", r"\1", candidate)
+                data = json.loads(candidate)
+                if isinstance(data, list) and data:
+                    logger.info(f"Recovered {len(data)} completed questions from truncated JSON response.")
+                    return data
+            except Exception:
+                last_brace = truncated_slice[:last_brace].rfind("}")
+
+    if not text:
+        raise ValueError("The LLM returned an empty response")
+    if errors:
+        error = errors[-1]
+        raise ValueError(f"No valid JSON question array found ({error.msg} at character {error.pos})")
+    raise ValueError("No JSON array or recognized questions wrapper found")
+
+
+def _response_diagnostics(response: Any) -> str:
+    metadata = getattr(response, "response_metadata", {}) or {}
+    usage = metadata.get("token_usage") or getattr(response, "usage_metadata", {}) or {}
+    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason") or "unknown"
+    if isinstance(usage, dict):
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or "unknown"
+    else:
+        completion_tokens = "unknown"
+    return f"finish_reason={finish_reason}, completion_tokens={completion_tokens}"
+
+
+def _parse_qna_response(response: Any) -> list[dict[str, Any]]:
+    content = getattr(response, "content", "")
+    if isinstance(content, list):
+        content = "\n".join(
+            str(part.get("text", "")) if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    parsed = extract_json_array(content)
+    items = [
+        item for item in parsed
+        if isinstance(item, dict)
+        and isinstance(item.get("question"), str)
+        and item["question"].strip()
+    ]
+    if parsed and not items:
+        raise ValueError("JSON was valid but contained no objects with a non-empty 'question' field")
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +364,22 @@ def node_batch_content(state: ResearchState) -> dict[str, Any]:
     """Node 2: Batch scraped text to respect token/context limits."""
     logger.info("[Node 2/5] Batching raw content into token-safe context chunks...")
     raw = state.get("raw_data", {})
-    i_sources = raw.get("interview_sources", [])
-    p_sources = raw.get("project_sources", [])
+    i_sources = [
+        source for source in raw.get("interview_sources", [])
+        if source.get("http_status") == 200
+        and (source.get("excerpts") or source.get("full_text_sample"))
+    ]
+    p_sources = [
+        source for source in raw.get("project_sources", [])
+        if source.get("http_status") == 200
+        and (source.get("excerpts") or source.get("full_text_sample"))
+    ]
+    logger.info(
+        "Usable source pages: %d interview, %d project (discarded %d interview, %d project failures/empty pages).",
+        len(i_sources), len(p_sources),
+        len(raw.get("interview_sources", [])) - len(i_sources),
+        len(raw.get("project_sources", [])) - len(p_sources),
+    )
 
     i_batches = chunk_text_batches(i_sources, max_chars_per_batch=12000)
     p_batches = chunk_text_batches(p_sources, max_chars_per_batch=12000)
@@ -374,11 +452,7 @@ Respond ONLY with valid JSON. Do not include markdown code block backticks (no `
 
 
 def node_extract_interview_qna(state: ResearchState) -> dict[str, Any]:
-    """
-    Node 4: Discovers candidate interview questions from scraped evidence and generates
-    expert-level interview preparation playbooks (verbatim STAR speech for behavioral,
-    clarifying questions & production code for technical).
-    """
+    """Extract source-backed interview questions and generate concise preparation notes."""
     company = state["company"]
     role = state["role"]
     llm, provider = get_configured_llm()
@@ -387,65 +461,59 @@ def node_extract_interview_qna(state: ResearchState) -> dict[str, Any]:
     if not i_batches:
         raise RuntimeError(f"No interview evidence scraped for {company} ({role}).")
 
-    logger.info(f"[Node 4/5] Extracting interview questions & generating expert playbooks across {len(i_batches)} batches via {provider.upper()}...")
-
+    logger.info("[Node 4/5] Extracting source-backed questions across %d batches via %s...", len(i_batches), provider.upper())
     all_qna: list[dict[str, Any]] = []
+    failures: list[str] = []
 
     for b_idx, batch in enumerate(i_batches[:3]):
-        prompt = f"""You are a Principal Engineering Director and Senior Hiring Committee Member conducting hiring for '{company}' ({role}).
-Analyze the following raw scraped candidate interview experiences, discussions, and transcripts. Produce an elite, publication-grade Interview Preparation Dossier.
+        if b_idx > 0:
+            time.sleep(2.0)
+        prompt = f"""Extract only interview questions explicitly stated or clearly reported in this source text for {company} ({role}). Do not invent questions or claim generic topics were asked. If no specific question is present, return {{"questions": []}}.
+For each question, provide concise fields: question, category, difficulty, interviewer_focus, how_to_answer, exemplary_response, traps_to_avoid, source_reference. Keep answers brief (1-3 sentences); do not generate code unless the source names a coding problem.
+Return at most 6 items as JSON: {{"questions": [{{"question":"...","category":"...","difficulty":"...","interviewer_focus":"...","how_to_answer":"...","exemplary_response":"...","traps_to_avoid":"...","source_reference":"..."}}]}}
 
-RAW SCRAPED EVIDENCE:
-{batch[:12000]}
-
-INSTRUCTIONS:
-1. DISCOVER QUESTIONS: Figure out all real candidate interview questions, technical problems, coding challenges, behavioral questions, and architectural discussions actually asked in rounds at {company}.
-2. BEST POSSIBLE EXPERT ANSWERS (ZERO AI SLOP):
-   - For TECHNICAL / CODING / DSA / SQL questions:
-     * "interviewer_focus": What core competency, invariant, or scale bottleneck the interviewer is testing.
-     * "how_to_answer": Step-by-step interview strategy:
-       - 2-3 clarifying questions the candidate MUST ask the interviewer before writing code.
-       - The verbal walkthrough explaining naive brute-force intuition and transitioning to the optimal algorithm.
-       - Formal Big-O time and auxiliary space complexity proof.
-     * "exemplary_response": The complete, production-grade, optimal solution with clean inline comments and edge-case handling.
-     * "traps_to_avoid": Specific edge cases, integer overflow, off-by-one errors, or naive mistakes that fail candidates on this question.
-   - For BEHAVIORAL / SITUATIONAL / MANAGERIAL / HR questions:
-     * "interviewer_focus": The specific leadership competency or company value under evaluation (e.g., Extreme Ownership, Conflict De-escalation with Stakeholders, Customer Empathy).
-     * "how_to_answer": The exact STAR framework breakdown (Situation, Task, Action, Result) with timing allocation.
-     * "exemplary_response": A realistic, persuasive, word-for-word first-person model response showing how to speak in the room:
-       Format: 'This can be said like this: "In my previous project at [Context]... I noticed [Problem]... I personally owned [Action] by executing three steps: 1) ... 2) ... 3) ... As a result, we [Measurable Metric: e.g. reduced latency by 35% / automated 20 hours of manual work]."'
-     * "traps_to_avoid": Common behavioral traps (e.g. passive 'we' without personal impact, badmouthing teammates, lacking measurable outcomes).
-
-Return a strict JSON array of objects adhering to this schema:
-[
-  {{
-    "question": "Exact question asked",
-    "category": "Technical Coding & DSA | System Architecture & Design | Behavioral & Leadership | Domain & Role-Specific",
-    "difficulty": "Easy | Medium | Hard",
-    "interviewer_focus": "Specific evaluation criteria...",
-    "how_to_answer": "Step-by-step interview navigation, clarifying questions, and verbal strategy...",
-    "exemplary_response": "For technical: Optimal commented code or architectural breakdown. For behavioral: 'This can be said like this: \"...\"'",
-    "traps_to_avoid": "Specific edge cases, pitfalls, or red flags...",
-    "source_reference": "Verified candidate interview report at {company}"
-  }}
-]
-
-Respond ONLY with a valid JSON array. Do not include markdown code block backticks (no ```json)."""
-
-        try:
-            res = llm.invoke([
-                SystemMessage(content="You are an elite principal technical interviewer. Return valid JSON array only."),
-                HumanMessage(content=prompt),
-            ])
-            items = extract_json_array(res.content)
-            if items:
-                all_qna.extend(items)
-                logger.info(f"Batch {b_idx + 1}: Extracted {len(items)} high-quality questions.")
-        except Exception as exc:
-            logger.warning(f"Batch {b_idx + 1} extraction warning: {exc}")
+SOURCE EVIDENCE:
+{batch[:8000]}"""
+        messages = [
+            SystemMessage(content="Extract only evidence-backed interview questions. Return valid JSON only."),
+            HumanMessage(content=prompt),
+        ]
+        parsed_items: list[dict[str, Any]] = []
+        last_issue = ""
+        for attempt in range(2):
+            response = None
+            try:
+                response = llm.invoke(messages)
+                parsed_items = _parse_qna_response(response)
+                if not parsed_items:
+                    last_issue = "valid JSON contained no source-backed questions"
+                break
+            except Exception as exc:
+                details = _response_diagnostics(response) if response is not None else "no response metadata"
+                last_issue = f"{exc}; {details}"
+                logger.warning("Batch %d attempt %d failed: %s", b_idx + 1, attempt + 1, last_issue)
+                if attempt == 0:
+                    messages.append(HumanMessage(content="Return a compact valid JSON object with a questions array only. Do not add prose."))
+        if parsed_items:
+            all_qna.extend(parsed_items)
+            logger.info("Batch %d: extracted %d source-backed questions.", b_idx + 1, len(parsed_items))
+        else:
+            failures.append(f"batch {b_idx + 1}: {last_issue or 'no questions found'}")
 
     if not all_qna:
-        raise RuntimeError(f"LLM failed to extract candidate questions from scraped content for {company}.")
+        raise RuntimeError(
+            f"No source-backed interview questions extracted for {company} ({role}). "
+            f"Batch outcomes: {'; '.join(failures) or 'no questions were present in scraped evidence'}"
+        )
+
+    unique_qna: list[dict[str, Any]] = []
+    seen_questions: set[str] = set()
+    for item in all_qna:
+        key = re.sub(r"\W+", " ", item["question"]).strip().lower()
+        if key and key not in seen_questions:
+            seen_questions.add(key)
+            unique_qna.append(item)
+    all_qna = unique_qna
 
     # Generate synthesized rounds & strategic prep tips
     rounds = [
