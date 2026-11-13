@@ -56,7 +56,7 @@ services:
       - EXECUTIONS_DATA_MAX_AGE=336
     volumes:
       - n8n_data:/home/node/.n8n
-      - ./output:/home/node/output
+      - ../output:/home/node/output
     depends_on:
       postgres:
         condition: service_healthy

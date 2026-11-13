@@ -9,6 +9,7 @@ Generates a formatted, multi-tab Excel workbook:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import pandas as pd
