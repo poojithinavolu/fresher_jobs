@@ -24,23 +24,31 @@ import sqlite3
 import requests
 from datetime import datetime
 
+from pathlib import Path
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 # Ensure UTF-8 console output on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-PROD_DB = os.path.join(OUTPUT_DIR, "fresher_jobs_production.db")
-JOBS_JSON = os.path.join(OUTPUT_DIR, "fresher_jobs_latest.json")
+OUTPUT_DIR = str(PROJECT_ROOT / "output")
+PROD_DB = str(PROJECT_ROOT / "output" / "fresher_jobs_production.db")
+JOBS_JSON = str(PROJECT_ROOT / "output" / "fresher_jobs_latest.json")
 
-from student_matcher import match_jobs_for_student, format_personalized_digest, load_jobs
+from services.student_matcher import match_jobs_for_student, format_personalized_digest, load_jobs
 
 def get_bot_token():
     # 1. Check environment variable
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     # 2. Check .env file
-    env_file = os.path.join(BASE_DIR, ".env")
-    if not token and os.path.exists(env_file):
+    env_file = PROJECT_ROOT / ".env"
+    if not token and env_file.exists():
         with open(env_file, "r", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("TELEGRAM_BOT_TOKEN="):

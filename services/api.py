@@ -9,25 +9,33 @@ Run with:
 """
 
 import os
+import sys
 import json
 import math
 import logging
 from datetime import datetime
+from pathlib import Path
 from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 import uvicorn
+import pandas as pd
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from scraper import scrape_fresher_jobs
-from main import export_to_excel
+from excel_exporter import export_to_excel
 from google_sheets_sync import sync_configured_google_sheet
-from redirect_service import resolve_and_record_click, get_click_stats
-import pandas as pd
+from services.redirect_service import resolve_and_record_click, get_click_stats
 
 app = FastAPI(title="Fresher Job Scraper API", version="1.0.0")
 logger = logging.getLogger("ScraperAPI")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+OUTPUT_DIR = str(PROJECT_ROOT / "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 

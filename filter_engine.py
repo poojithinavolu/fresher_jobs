@@ -11,7 +11,7 @@ Strict verification pipeline that ensures:
 import math
 import re
 from datetime import datetime, date, timedelta
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 
 from config import (
     MAX_HOURS_OLD,
@@ -109,8 +109,10 @@ def parse_experience_range(exp_str: Optional[str]) -> Tuple[Optional[float], Opt
 
     if "fresher" in exp_clean:
         return 0.0, 0.0
-    # Match 'X - Y yrs' or 'X to Y years'
-    range_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)", exp_clean)
+    # Match ranges written with hyphens, en/em dashes, or "to".
+    range_match = re.search(
+        r"(\d+(?:\.\d+)?)\s*(?:[-–—]|to)\s*(\d+(?:\.\d+)?)", exp_clean
+    )
     if range_match:
         min_yr = float(range_match.group(1))
         max_yr = float(range_match.group(2))
@@ -124,13 +126,68 @@ def parse_experience_range(exp_str: Optional[str]) -> Tuple[Optional[float], Opt
         years = float(months.group(1)) / 12
         return years, years
 
-    # Match 'X+ yrs' or 'X yrs'
-    single_match = re.search(r"(\d+(?:\.\d+)?)\s*\+?\s*(?:yr|year)", exp_clean)
+    # An open-ended requirement such as "5+ years" has no safe upper bound.
+    open_ended = re.search(
+        r"(\d+(?:\.\d+)?)\s*\+\s*(?P<unit>months?|mos?|yrs?|years?)",
+        exp_clean,
+    )
+    if open_ended:
+        yr = float(open_ended.group(1))
+        if open_ended.group("unit").startswith(("month", "mo")):
+            yr /= 12
+        return yr, float("inf")
+
+    # Match "X yrs" / "X years".
+    single_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:yr|year)", exp_clean)
     if single_match:
         yr = float(single_match.group(1))
         return yr, yr
 
     return None, None
+
+
+def _experience_claims_from_description(description: Optional[str]) -> List[Tuple[float, float]]:
+    """Extract explicit experience requirements without an LLM.
+
+    Only considers a numeric duration when the same sentence/line also refers
+    to experience. This intentionally errs on the side of rejecting uncertain
+    experience claims for a strict fresher pipeline.
+    """
+    text = _text(description).lower().replace("\u2011", "-")
+    claims: List[Tuple[float, float]] = []
+    for clause in re.split(r"[\n.!?;]+", text):
+        if not re.search(r"\b(?:experience|exp)\b", clause):
+            continue
+        has_requirement_context = bool(re.search(
+            r"\b(?:required|requirement|requires?|must|need(?:ed)?|minimum|at\s+least|"
+            r"should\s+have|preferred|desired|candidate|you\s+have)\b",
+            clause,
+        ))
+        # "2 years of professional experience" is itself a clear claim.
+        has_experience_duration = bool(
+            re.search(
+                r"\b\d+(?:\.\d+)?\s*(?:\+|[-–—]|to)?\s*\d*(?:\.\d+)?\s*"
+                r"(?:months?|mos?|years?|yrs?)\b[^,]{0,45}\b(?:experience|exp)\b",
+                clause,
+            )
+            or re.search(
+                r"\b(?:experience|exp)\b[^.!?]{0,40}"
+                r"\b\d+(?:\.\d+)?\s*(?:\+|[-–—]|to)?\s*\d*(?:\.\d+)?\s*"
+                r"(?:months?|mos?|years?|yrs?)\b",
+                clause,
+            )
+        )
+        if not has_requirement_context and not has_experience_duration:
+            continue
+        for match in re.finditer(
+            r"\b\d+(?:\.\d+)?\s*(?:\+|[-–—]|to)?\s*\d*(?:\.\d+)?\s*"
+            r"(?:months?|mos?|years?|yrs?)\b",
+            clause,
+        ):
+            lo, hi = parse_experience_range(match.group(0))
+            if lo is not None and hi is not None:
+                claims.append((lo, hi))
+    return claims
 
 
 def is_fresher_job(
@@ -171,33 +228,27 @@ def is_fresher_job(
     if level_match:
         return False, f"Title indicates Level 2+ / experienced role: '{level_match.group(0)}'"
 
-    # 4. Check board metadata and the JD before allowing the listing through.
-    # Experience is frequently missing in board cards, so validate descriptions too.
+    # 4. Check board metadata and every explicit experience requirement in the JD.
+    # Search-card data can disagree with job-detail data or the description.
     exp_text = str(experience_range or "")
-    if not exp_text.strip() or exp_text.lower() in {"nan", "none"}:
-        found = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*(years?|yrs?|months?|mos?)\b", desc_str)
-        if found:
-            exp_text = f"{found.group(1)}-{found.group(2)} {found.group(3)}"
-        else:
-            found = re.search(r"\b(\d+(?:\.\d+)?)\s*(years?|yrs?|months?|mos?)\s+(?:of\s+)?experience\b", desc_str)
-            if found:
-                exp_text = f"{found.group(1)} {found.group(2)}"
     min_exp, max_exp = parse_experience_range(exp_text)
+    if exp_text.lower().startswith("unverified"):
+        return False, "Naukri detail-page experience could not be verified"
     if min_exp is not None:
         if min_exp > MAX_ALLOWED_EXPERIENCE_YEARS:
             return False, f"Minimum experience required ({min_exp} yrs) exceeds fresher limit ({MAX_ALLOWED_EXPERIENCE_YEARS} yr)"
-        # If upper bound of experience is too high (e.g. 0-5 Yrs, 0-7 Yrs), it's not a pure fresher role
         if max_exp is not None and max_exp > MAX_ALLOWED_EXPERIENCE_YEARS:
             return False, f"Maximum experience ({max_exp} yrs) exceeds {MAX_ALLOWED_EXPERIENCE_YEARS} yr limit"
-    else:
-        return False, "Experience requirement missing; cannot verify six-month maximum"
 
-    # 5. Check description for senior experience demands
-    senior_desc_match = re.search(r"\b([2-9]|1\d)\+?\s*(?:to\s*\d+\s*)?years?(?:\s*of)?\s*experience", desc_str)
-    if senior_desc_match:
-        matched_text = senior_desc_match.group(0)
-        if any(w in desc_str[max(0, senior_desc_match.start() - 30) : senior_desc_match.end()] for w in ["candidate", "must have", "minimum", "requires", "experience in"]):
-            return False, f"Description mentions experienced candidate requirement: '{matched_text}'"
+    description_claims = _experience_claims_from_description(desc_str)
+    for claim_min, claim_max in description_claims:
+        if claim_min > MAX_ALLOWED_EXPERIENCE_YEARS:
+            return False, f"Description requires at least {claim_min:g} years of experience"
+        if claim_max > MAX_ALLOWED_EXPERIENCE_YEARS:
+            return False, f"Description allows/requires experience up to {claim_max:g} years"
+
+    if min_exp is None and not description_claims:
+        return False, "Experience requirement missing; cannot verify fresher limit"
 
     if re.search(r"\b(?:internship|project)\s+(?:experience|letter|certificate)\b|\bproject\s+experience\b|\btraining\s+(?:experience|certificate|letter)\b|\b(?:training|project)\s+completion\s+(?:letter|certificate)\b", desc_str):
         return False, "Internship/project/training experience or documentation requirement"
@@ -324,7 +375,10 @@ def enrich_experience_and_salary(job: Dict[str, Any]) -> Dict[str, Any]:
     req_exp = re.search(r"\b(?:minimum|required|at least)\s+(?:\d+\s*)?(?:months?|years?)\s+(?:of\s+)?experience\b", desc, re.I)
     no_exp = re.search(r"\b(?:no|zero)\s+(?:prior\s+)?experience\s+(?:required|needed)\b|\bfresher\b", desc, re.I)
     job["prior_experience_required"] = "Yes" if req_exp else ("No" if no_exp else "Unspecified")
-    job["job_requirement"] = desc[:1200]
+    # Keep enough of the original description for company/role interview
+    # research and student-facing context. A 1,200-character cap removed
+    # qualifications and experience criteria that often appear near the end.
+    job["job_requirement"] = desc[:16000]
 
     # -------------------------------------------------------------
     # 2. Salary Enrichment (Never Leave Blank)

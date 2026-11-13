@@ -16,12 +16,21 @@ import hashlib
 from datetime import datetime
 from typing import Optional, Dict, Any
 
+from pathlib import Path
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 # Ensure UTF-8 console output on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-DB_PATH = os.path.join(OUTPUT_DIR, "pipeline_history.db")
+OUTPUT_DIR = str(PROJECT_ROOT / "output")
+DB_PATH = str(PROJECT_ROOT / "output" / "pipeline_history.db")
 
 def init_redirect_store(db_path: str = DB_PATH):
     """Initializes the redirect tokens and click analytics table."""

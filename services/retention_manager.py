@@ -15,14 +15,23 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta
 
+from pathlib import Path
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 # Ensure UTF-8 console output on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-BACKUP_DIR = os.path.join(OUTPUT_DIR, "backups")
+OUTPUT_DIR = str(PROJECT_ROOT / "output")
+BACKUP_DIR = str(PROJECT_ROOT / "output" / "backups")
 os.makedirs(BACKUP_DIR, exist_ok=True)
-SQLITE_DB = os.path.join(OUTPUT_DIR, "fresher_jobs_production.db")
+SQLITE_DB = str(PROJECT_ROOT / "output" / "fresher_jobs_production.db")
 
 def create_database_backup(db_path: str = SQLITE_DB) -> str:
     """Creates a local timestamped backup of the production database."""

@@ -21,12 +21,21 @@ import requests
 from datetime import datetime, date
 from typing import List, Dict, Any, Optional
 
+from pathlib import Path
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 # Ensure UTF-8 output on Windows console
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-HR_JSON = os.path.join(OUTPUT_DIR, "new_hr_contacts_latest.json")
+OUTPUT_DIR = str(PROJECT_ROOT / "output")
+HR_JSON = str(PROJECT_ROOT / "output" / "new_hr_contacts_latest.json")
 DAILY_OUTREACH_CAP = 100
 
 def verify_mx_record(domain: str) -> bool:

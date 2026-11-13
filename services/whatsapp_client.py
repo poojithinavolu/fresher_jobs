@@ -18,13 +18,21 @@ import requests
 from datetime import datetime
 from typing import Dict, Any, Optional
 
+from pathlib import Path
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 # Ensure UTF-8 console output on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-PROD_DB = os.path.join(OUTPUT_DIR, "fresher_jobs_production.db")
+OUTPUT_DIR = str(PROJECT_ROOT / "output")
+PROD_DB = str(PROJECT_ROOT / "output" / "fresher_jobs_production.db")
 
 def is_student_opted_in(phone: str, db_path: str = PROD_DB) -> bool:
     """Verifies if student gave explicit DPDPA opt-in consent for WhatsApp."""

@@ -1,0 +1,132 @@
+{
+  "checked_date": "2026-11-13",
+  "method": "Python httpx + BeautifulSoup; robots.txt checked before direct source fetch; no access controls bypassed",
+  "search_provider_check": {
+    "ddg_html_simple_probe": "HTTP 200 with 10 parseable links",
+    "ddg_lite_simple_probe": "HTTP 200 with 10 parseable links",
+    "latest_dynamic_sample": "HTTP 202 on all four targeted queries in both HTML and Lite; zero hits attached",
+    "interpretation": "Provider result pages are intermittently challenged; do not claim a successful search when the query returns HTTP 202."
+  },
+  "interview_sources": [
+    {
+      "domain": "geeksforgeeks.org",
+      "approved": true,
+      "kind": "candidate interview experience write-ups",
+      "observed_example": "EY Analyst on-campus and Hitachi Vantara off-campus write-ups",
+      "robots": "allowed",
+      "http_status": 200,
+      "visible_text_chars": 1610,
+      "decision": "Useful, fetchable HTML. Reports may be old or adjacent to the target role/company."
+    },
+    {
+      "domain": "interviewexperiences.in",
+      "approved": true,
+      "kind": "candidate interview reports and questions by company",
+      "observed_example": "EPAM fresher report (12,677 chars), Accenture questions (11,353 chars)",
+      "robots": "allowed",
+      "http_status": 200,
+      "visible_text_chars": 12677,
+      "decision": "High-value candidate-submitted interview reports with recent role, experience, and round metadata."
+    },
+    {
+      "domain": "boardinfinity.com",
+      "approved": true,
+      "kind": "candidate interview experience / community editorial",
+      "observed_example": "EY Risk Analyst interview questions and experience guide",
+      "robots": "allowed",
+      "http_status": 200,
+      "visible_text_chars": 27682,
+      "decision": "Useful, fetchable page with role-related prompts; label source and exact-role fit."
+    },
+    {
+      "domain": "ambitionbox.com",
+      "approved": true,
+      "kind": "candidate interview reports and questions",
+      "observed_example": "EY Risk Analyst interview questions page",
+      "robots": "allowed",
+      "http_status": 200,
+      "visible_text_chars": 9424,
+      "decision": "Useful, fetchable page; user-submitted interview reports can be anecdotal."
+    },
+    {
+      "domain": "prepinsta.com",
+      "approved": true,
+      "kind": "interview experiences and editorial question guides",
+      "observed_example": "Deloitte interview experience page",
+      "robots": "allowed",
+      "http_status": 200,
+      "visible_text_chars": 11135,
+      "decision": "Fetchable and extractable; only accept company-specific search hits and label editorial versus candidate report."
+    }
+  ],
+  "official_project_sources": [
+    {
+      "domain": "ey.com",
+      "approved": true,
+      "kind": "official company capabilities and client stories",
+      "robots": "allowed in prior prototype run",
+      "decision": "Official context only; does not establish which projects the target team will assign."
+    },
+    {
+      "domain": "hitachidigital.com",
+      "approved": true,
+      "kind": "official company client stories",
+      "robots": "allowed in prior prototype run",
+      "decision": "Official context only; does not establish which projects the target team will assign."
+    }
+  ],
+  "rejected_or_unavailable": [
+    {
+      "domain": "reddit.com",
+      "robots": "disallowed for tested page and user agent",
+      "http_status": null,
+      "decision": "Skipped before requesting the post; no robots bypass."
+    },
+    {
+      "domain": "glassdoor.co.in",
+      "robots": "allowed",
+      "http_status": 403,
+      "decision": "Security block; not bypassed."
+    },
+    {
+      "domain": "indeed.com",
+      "robots": "allowed",
+      "http_status": 403,
+      "decision": "Security block; not bypassed."
+    },
+    {
+      "domain": "naukri.com",
+      "robots": "allowed",
+      "http_status": 404,
+      "visible_text_chars": 205,
+      "decision": "Tested Naukri Campus interview page was a not-found page; not approved based on this probe."
+    },
+    {
+      "domain": "freshersworld.com",
+      "robots": "allowed",
+      "http_status": 500,
+      "visible_text_chars": 0,
+      "decision": "Tested placement interview experience route returned an error page; not approved based on this probe."
+    },
+    {
+      "domain": "naukri.com/code360",
+      "robots": "allowed",
+      "http_status": 200,
+      "visible_text_chars": 66,
+      "decision": "Previously tested route returned a generic shell with no useful article text."
+    },
+    {
+      "domain": "fishbowlapp.com",
+      "robots": "unavailable: robots.txt HTTP 403",
+      "http_status": null,
+      "decision": "Failed closed; not requested."
+    },
+    {
+      "domain": "leetcode.com",
+      "robots": "allowed",
+      "http_status": 403,
+      "decision": "Challenge page; not bypassed."
+    }
+  ],
+  "policy": "Search and fetch only approved domains by category. Search snippets are leads, not source evidence. Review source age, company, role, and candidate-report status before using any question."
+}

@@ -15,6 +15,14 @@ import sys
 import json
 import time
 from datetime import datetime
+from pathlib import Path
+
+# Add project root and services directory to sys.path
+SERVICES_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICES_DIR.parent
+for p in [str(PROJECT_ROOT), str(SERVICES_DIR)]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 # Ensure UTF-8 console output on Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -25,10 +33,10 @@ from scraper import scrape_fresher_jobs
 from filter_engine import evaluate_job
 from history_store import HistoryStore
 from hr_enricher import process_hr_enrichment
-from main import export_to_excel
-from student_matcher import run_student_dispatch, match_jobs_for_student, DEFAULT_STUDENTS
-from brevo_mailer import run_hr_outreach
-from db_sync import sync_to_sqlite
+from excel_exporter import export_to_excel
+from services.student_matcher import run_student_dispatch, match_jobs_for_student, DEFAULT_STUDENTS
+from services.brevo_mailer import run_hr_outreach
+from services.db_sync import sync_to_sqlite
 from google_sheets_sync import sync_configured_google_sheet
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")

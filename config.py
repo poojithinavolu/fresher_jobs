@@ -33,6 +33,9 @@ RESULTS_PER_QUERY: int = 25
 
 # Pacing delay between queries in seconds (helps avoid rate limits)
 QUERY_DELAY_SECONDS: float = 5.0
+# Run two independent query/location jobs at a time. Naukri calls remain
+# serialized by its adapter lock; this overlaps the other boards safely.
+QUERY_CONCURRENCY: int = 2
 # Optional rotating proxy list for boards that rate-limit this network.
 JOBSPY_PROXIES: List[str] = [
     proxy.strip() for proxy in os.getenv("JOBSPY_PROXIES", "").split(",") if proxy.strip()
