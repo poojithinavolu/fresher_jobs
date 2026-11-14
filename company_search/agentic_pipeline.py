@@ -141,18 +141,40 @@ def get_configured_llm() -> tuple[Any, str]:
     STRICT ERROR POLICY:
     Raises RuntimeError immediately if no valid API key is present. Fallback mode is disabled.
     """
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    groq_key = (
+        os.getenv("GROQ_API_KEY1")
+        or os.getenv("GROQ_API_KEY_1")
+        or os.getenv("GROQ_API_KEY2")
+        or os.getenv("GROQ_API_KEY_2")
+        or os.getenv("GROQ_API_KEY3")
+        or os.getenv("GROQ_API_KEY_3")
+        or os.getenv("GROQ_API_KEY", "")
+    ).strip().lstrip("#")
     if groq_key and not groq_key.startswith("YOUR_") and not groq_key.startswith("gsk_PLACEHOLDER"):
         try:
-            from langchain_groq import ChatGroq
+            from langchain_openai import ChatOpenAI
             model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
             logger.info(f"Using Groq LLM: {model_name}")
-            return ChatGroq(api_key=groq_key, model_name=model_name, temperature=0.15, max_tokens=LLM_MAX_COMPLETION_TOKENS), "groq"
+            return ChatOpenAI(
+                api_key=groq_key,
+                base_url="https://api.groq.com/openai/v1",
+                model=model_name,
+                temperature=0.15,
+                max_tokens=LLM_MAX_COMPLETION_TOKENS
+            ), "groq"
         except Exception as exc:
-            logger.error(f"Failed to initialize ChatGroq: {exc}")
+            logger.error(f"Failed to initialize Groq ChatOpenAI: {exc}")
             raise
 
-    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    openrouter_key = (
+        os.getenv("OPENROUTER_API_KEY1")
+        or os.getenv("OPENROUTER_API_KEY_1")
+        or os.getenv("OPENROUTER_API_KEY2")
+        or os.getenv("OPENROUTER_API_KEY_2")
+        or os.getenv("OPENROUTER_API_KEY3")
+        or os.getenv("OPENROUTER_API_KEY_3")
+        or os.getenv("OPENROUTER_API_KEY", "")
+    ).strip().lstrip("#")
     if openrouter_key and not openrouter_key.startswith("YOUR_") and not openrouter_key.startswith("sk-or-PLACEHOLDER"):
         # Auto-fix: OpenRouter requires the 'sk-or-v1-' prefix
         if not openrouter_key.startswith("sk-or-"):

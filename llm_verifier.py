@@ -22,55 +22,147 @@ logger = logging.getLogger("LLMVerifier")
 _CACHED_LLM = None
 
 
+def get_groq_keys() -> list:
+    """Returns a deduplicated list of active Groq API keys in priority order."""
+    keys = []
+    names = [
+        "GROQ_API_KEY1", "GROQ_API_KEY_1",
+        "GROQ_API_KEY2", "GROQ_API_KEY_2",
+        "GROQ_API_KEY3", "GROQ_API_KEY_3",
+        "GROQ_API_KEY",
+    ]
+    for n in names:
+        val = os.getenv(n, "").strip().lstrip("#").strip("\"'")
+        if val and not val.startswith("YOUR_") and not val.startswith("gsk_PLACEHOLDER") and val not in keys:
+            keys.append(val)
+    return keys
+
+
+def get_openrouter_keys() -> list:
+    """Returns a deduplicated list of active OpenRouter API keys in priority order."""
+    keys = []
+    names = [
+        "OPENROUTER_API_KEY1", "OPENROUTER_API_KEY_1",
+        "OPENROUTER_API_KEY2", "OPENROUTER_API_KEY_2",
+        "OPENROUTER_API_KEY3", "OPENROUTER_API_KEY_3",
+        "OPENROUTER_API_KEY",
+    ]
+    for n in names:
+        val = os.getenv(n, "").strip().lstrip("#").strip("\"'")
+        if val and not val.startswith("YOUR_") and not val.startswith("sk-or-PLACEHOLDER"):
+            if not val.startswith("sk-or-"):
+                val = f"sk-or-v1-{val}"
+            if val not in keys:
+                keys.append(val)
+    return keys
+
+
+class RotatingLLM:
+    """
+    Multi-provider, multi-key rotating LLM client with automatic failover.
+    Sequentially rotates through Groq keys (1 -> 2 -> 3) on rate limit or quota exhaustion.
+    If all Groq keys are exhausted, seamlessly falls back to OpenRouter keys (1 -> 2 -> 3).
+    """
+
+    def __init__(self):
+        self.groq_keys = get_groq_keys()
+        self.openrouter_keys = get_openrouter_keys()
+        self.active_groq_idx = 0
+        self.active_openrouter_idx = 0
+        self.groq_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        self.openrouter_model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+
+    def has_keys(self) -> bool:
+        return bool(self.groq_keys or self.openrouter_keys)
+
+    def invoke(self, messages: Any) -> Any:
+        from langchain_openai import ChatOpenAI
+
+        # 1. Iterate through configured Groq keys
+        while self.active_groq_idx < len(self.groq_keys):
+            curr_key = self.groq_keys[self.active_groq_idx]
+            key_id = f"Groq Key #{self.active_groq_idx + 1}"
+            try:
+                client = ChatOpenAI(
+                    api_key=curr_key,
+                    base_url="https://api.groq.com/openai/v1",
+                    model=self.groq_model,
+                    temperature=0.1,
+                    max_tokens=600,
+                )
+                return client.invoke(messages)
+            except Exception as exc:
+                err_str = str(exc).lower()
+                is_quota_or_rate = any(
+                    x in err_str
+                    for x in ["429", "rate limit", "quota", "limit exceeded", "tokens per minute", "requests per minute", "invalid_api_key"]
+                )
+                if is_quota_or_rate:
+                    logger.warning(
+                        "[%s] Rate-limited / quota exhausted: %s. Rotating to next key...",
+                        key_id, exc
+                    )
+                    self.active_groq_idx += 1
+                else:
+                    logger.warning("[%s] Request failed: %s. Rotating to next key...", key_id, exc)
+                    self.active_groq_idx += 1
+
+        if self.groq_keys and self.active_groq_idx >= len(self.groq_keys):
+            logger.info("All %d configured Groq keys exhausted. Shifting to OpenRouter pool...", len(self.groq_keys))
+
+        # 2. Iterate through configured OpenRouter keys
+        while self.active_openrouter_idx < len(self.openrouter_keys):
+            curr_key = self.openrouter_keys[self.active_openrouter_idx]
+            key_id = f"OpenRouter Key #{self.active_openrouter_idx + 1}"
+            try:
+                client = ChatOpenAI(
+                    api_key=curr_key,
+                    base_url="https://openrouter.ai/api/v1",
+                    model=self.openrouter_model,
+                    temperature=0.1,
+                    max_tokens=500,
+                    default_headers={
+                        "HTTP-Referer": "https://github.com/placement-prep/fresher-job-scraper",
+                        "X-Title": "Fresher Job Intelligence Scraper",
+                    },
+                )
+                return client.invoke(messages)
+            except Exception as exc:
+                err_str = str(exc).lower()
+                is_quota_or_rate = any(
+                    x in err_str
+                    for x in ["429", "rate limit", "quota", "free-models-per-day", "limit exceeded", "credits", "invalid"]
+                )
+                if is_quota_or_rate:
+                    logger.warning(
+                        "[%s] Rate-limited / quota exhausted: %s. Rotating to next key...",
+                        key_id, exc
+                    )
+                    self.active_openrouter_idx += 1
+                else:
+                    logger.warning("[%s] Request failed: %s. Rotating to next key...", key_id, exc)
+                    self.active_openrouter_idx += 1
+
+        raise RuntimeError("All configured Groq and OpenRouter keys have been exhausted!")
+
+
 def get_llm():
-    """Returns an active LangChain ChatModel (Groq or OpenRouter)."""
+    """Returns the singleton RotatingLLM instance or None if no keys configured."""
     global _CACHED_LLM
     if _CACHED_LLM is not None:
         return _CACHED_LLM
 
-    # Try Groq first (high RPM, 500 tok/s LPU inference, 100% free tier)
-    groq_key = os.getenv("GROQ_API_KEY", "").strip().lstrip("#")
-    if groq_key and not groq_key.startswith("YOUR_"):
-        try:
-            from langchain_openai import ChatOpenAI
-            model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-            _CACHED_LLM = ChatOpenAI(
-                api_key=groq_key,
-                base_url="https://api.groq.com/openai/v1",
-                model=model,
-                temperature=0.1,
-                max_tokens=600,
-            )
-            logger.info("Initialized Groq ChatOpenAI LLM: %s", model)
-            return _CACHED_LLM
-        except Exception as exc:
-            logger.warning("Failed to initialize Groq ChatOpenAI: %s", exc)
+    pool = RotatingLLM()
+    if not pool.has_keys():
+        logger.warning("No Groq or OpenRouter API keys detected.")
+        return None
 
-    # Try OpenRouter as secondary option
-    openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if openrouter_key and not openrouter_key.startswith("YOUR_") and not openrouter_key.startswith("#"):
-        if not openrouter_key.startswith("sk-or-"):
-            openrouter_key = f"sk-or-v1-{openrouter_key}"
-        try:
-            from langchain_openai import ChatOpenAI
-            model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
-            _CACHED_LLM = ChatOpenAI(
-                api_key=openrouter_key,
-                base_url="https://openrouter.ai/api/v1",
-                model=model,
-                temperature=0.1,
-                max_tokens=500,
-                default_headers={
-                    "HTTP-Referer": "https://github.com/placement-prep/fresher-job-scraper",
-                    "X-Title": "Fresher Job Intelligence Scraper",
-                },
-            )
-            logger.info("Initialized OpenRouter LLM: %s", model)
-            return _CACHED_LLM
-        except Exception as exc:
-            logger.warning("Failed to initialize OpenRouter ChatOpenAI: %s", exc)
-
-    return None
+    _CACHED_LLM = pool
+    logger.info(
+        "Initialized RotatingLLM pool with %d Groq key(s) and %d OpenRouter key(s).",
+        len(pool.groq_keys), len(pool.openrouter_keys)
+    )
+    return _CACHED_LLM
 
 
 def extract_requirements_and_skills_context(description: str, max_chars: int = 3500) -> str:

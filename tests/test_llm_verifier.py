@@ -63,3 +63,42 @@ def test_verify_fresher_mock_fail_experienced():
     )
     assert res["is_fresher_eligible"] is False
     assert "3+ years" in res["rejection_reason"]
+
+
+def test_rotating_llm_key_failover(monkeypatch):
+    from llm_verifier import RotatingLLM
+    import os
+
+    monkeypatch.setenv("GROQ_API_KEY1", "key_fail_1")
+    monkeypatch.setenv("GROQ_API_KEY2", "key_success_2")
+    monkeypatch.delenv("GROQ_API_KEY3", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    call_history = []
+
+    class MockChatOpenAI:
+        def __init__(self, api_key, **kwargs):
+            self.api_key = api_key
+
+        def invoke(self, messages):
+            call_history.append(self.api_key)
+            if self.api_key == "key_fail_1":
+                raise RuntimeError("429 Rate limit exceeded: tokens per minute limit reached")
+            class Resp:
+                content = '{"is_fresher_eligible": true, "curated_skills": "Python, SQL"}'
+            return Resp()
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", MockChatOpenAI)
+
+    rotator = RotatingLLM()
+    assert len(rotator.groq_keys) == 2
+    res = rotator.invoke("test")
+    assert "is_fresher_eligible" in res.content
+    # Verified it tried key 1 first, failed on 429, then succeeded on key 2!
+    assert call_history == ["key_fail_1", "key_success_2"]
+    assert rotator.active_groq_idx == 1
+
+    # Next call should directly use key 2 without repeating key 1!
+    rotator.invoke("second call")
+    assert call_history == ["key_fail_1", "key_success_2", "key_success_2"]

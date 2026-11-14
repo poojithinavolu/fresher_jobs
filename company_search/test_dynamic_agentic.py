@@ -54,7 +54,13 @@ class TestDynamicAgenticPipeline(unittest.TestCase):
 
     def test_strict_key_error_policy(self):
         """Verify that missing API keys strictly raise a RuntimeError instead of silent fallback."""
-        with patch.dict(os.environ, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}):
+        cleared_keys = {
+            "GROQ_API_KEY": "", "GROQ_API_KEY1": "", "GROQ_API_KEY2": "", "GROQ_API_KEY3": "",
+            "GROQ_API_KEY_1": "", "GROQ_API_KEY_2": "", "GROQ_API_KEY_3": "",
+            "OPENROUTER_API_KEY": "", "OPENROUTER_API_KEY1": "", "OPENROUTER_API_KEY2": "", "OPENROUTER_API_KEY3": "",
+            "OPENROUTER_API_KEY_1": "", "OPENROUTER_API_KEY_2": "", "OPENROUTER_API_KEY_3": "",
+        }
+        with patch.dict(os.environ, cleared_keys):
             with self.assertRaises(RuntimeError) as ctx:
                 get_configured_llm()
             self.assertIn("CRITICAL ERROR: No active LLM API key detected", str(ctx.exception))
