@@ -17,5 +17,11 @@ gspread>=5.10.0
 google-auth>=2.20.0
 python-dotenv>=1.0.0
 
+# LLM Gatekeeper, HTML Parser & Browser Impersonator
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+curl-cffi>=0.7.0
+beautifulsoup4>=4.12.0
+
 # PostgreSQL 16 Driver (Optional - SQLite fallback included)
 psycopg2-binary>=2.9.0
