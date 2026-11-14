@@ -17,6 +17,7 @@ from company_search.dynamic_search import (
     get_approved_domains,
     is_host_approved,
     PublicFetcher,
+    search_interview_sources,
 )
 from company_search.agentic_pipeline import (
     chunk_text_batches,
@@ -27,6 +28,7 @@ from company_search.agentic_pipeline import (
     CompanyProject,
     QuestionAnswer,
     get_configured_llm,
+    node_extract_interview_qna,
 )
 from company_search.pdf_generator import build_interview_prep_pdf, safe_text
 
@@ -67,6 +69,54 @@ class TestDynamicAgenticPipeline(unittest.TestCase):
         parsed_arr = extract_json_array(raw_arr)
         self.assertEqual(len(parsed_arr), 1)
         self.assertEqual(parsed_arr[0]["question"], "What is SQL?")
+
+    def test_malformed_llm_json_is_retried_with_diagnostic_safe_parser(self):
+        class Response:
+            def __init__(self, content, metadata=None):
+                self.content = content
+                self.response_metadata = metadata or {}
+
+        class FakeLLM:
+            def __init__(self):
+                self.calls = 0
+
+            def invoke(self, _messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return Response('{"questions": [{"question": "truncated"', {"finish_reason": "length", "token_usage": {"completion_tokens": 100}})
+                return Response('{"questions": [{"question": "Explain a SQL join", "category": "Technical", "difficulty": "Easy"}]}')
+
+        fake = FakeLLM()
+        state = {"company": "Cognizant", "role": "Analyst", "interview_batches": ["Candidate report: Explain a SQL join."]}
+        with patch("company_search.agentic_pipeline.get_configured_llm", return_value=(fake, "groq")), patch("company_search.agentic_pipeline.time.sleep"):
+            result = node_extract_interview_qna(state)
+        self.assertEqual(fake.calls, 2)
+        self.assertEqual(result["questions_and_answers"][0]["question"], "Explain a SQL join")
+
+    def test_valid_empty_llm_result_is_not_replaced_with_invented_questions(self):
+        class Response:
+            content = '{"questions": []}'
+            response_metadata = {"finish_reason": "stop"}
+
+        class FakeLLM:
+            calls = 0
+
+            def invoke(self, _messages):
+                self.calls += 1
+                return Response()
+
+        fake = FakeLLM()
+        state = {"company": "Cognizant", "role": "Analyst", "interview_batches": ["Candidate report only mentions two interview rounds."]}
+        with patch("company_search.agentic_pipeline.get_configured_llm", return_value=(fake, "groq")), patch("company_search.agentic_pipeline.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "valid JSON contained no source-backed questions"):
+                node_extract_interview_qna(state)
+        self.assertEqual(fake.calls, 1)
+
+    def test_interview_search_rejects_unapproved_domains(self):
+        fake_result = {"title": "Cognizant interview", "url": "https://random.example/interview", "snippet": "questions"}
+        with patch("company_search.dynamic_search.execute_ddgs_search", return_value=[fake_result]), patch("company_search.dynamic_search.time.sleep"):
+            hits = search_interview_sources("Cognizant", "Analyst", max_sources=3)
+        self.assertEqual(hits, [])
 
     def test_pydantic_schema_and_pdf_generation(self):
         """Tests full validation of professional schema and publication-grade PDF generation."""

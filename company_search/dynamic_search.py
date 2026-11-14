@@ -261,13 +261,14 @@ def search_interview_sources(company: str, role: str, max_sources: int = 5) -> l
 
             host = (urlsplit(url).hostname or "").lower().rstrip(".")
             is_approved = any(host == d or host.endswith("." + d) for d in approved_domains)
-            has_interview_keywords = bool(re.search(r"interview|question|experience", url.lower()))
 
             # Filter out non-interview social media
             if any(b in host for b in ["youtube.com", "facebook.com", "twitter.com", "instagram.com"]):
                 continue
 
-            if is_approved or has_interview_keywords:
+            # Keep the fixed source policy strict: a URL that merely contains
+            # "interview" is not sufficient approval for a fetch.
+            if is_approved:
                 seen_urls.add(url)
                 hits.append(
                     SearchResultHit(
@@ -349,7 +350,10 @@ def run_dynamic_company_research(
     interview_pages = []
     for hit in interview_hits:
         logger.info(f"Fetching interview source: {hit.url}")
-        status, html, note = fetcher.fetch_html(hit.url)
+        status, html, note = fetcher.fetch_html(
+            hit.url,
+            allowed_domains=get_approved_domains("interview"),
+        )
         content = extract_content(html, "interview") if html else {"title": hit.title, "headings": [], "excerpts": [], "full_text_sample": "", "visible_text_chars": 0}
         interview_pages.append({
             **asdict(hit),

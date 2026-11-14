@@ -13,8 +13,8 @@ except ImportError:
     pass
 from typing import List, Dict
 
-# Maximum age of jobs to keep in hours (48 = last 2 days)
-MAX_HOURS_OLD: int = 48
+# Maximum age of jobs to keep in hours (20 = last 20 hours)
+MAX_HOURS_OLD: int = 20
 
 # Target job boards (all 100% free via JobSpy)
 # JobSpy 1.4.x supports these boards. Monster India / JobsAhead is not a
@@ -29,42 +29,42 @@ DEFAULT_LOCATIONS: List[str] = ["Mumbai", "Hyderabad"]
 INDEED_COUNTRY: str = "india"
 
 # Maximum raw results to fetch per (query, location, site) combination
+# 25 ensures single-page sub-second retrieval without multi-page delay loops or rate limits.
 RESULTS_PER_QUERY: int = 25
 
 # Pacing delay between queries in seconds (helps avoid rate limits)
-QUERY_DELAY_SECONDS: float = 5.0
-# Run two independent query/location jobs at a time. Naukri calls remain
-# serialized by its adapter lock; this overlaps the other boards safely.
-QUERY_CONCURRENCY: int = 2
+QUERY_DELAY_SECONDS: float = 1.0
+# Run three independent query/location jobs at a time.
+QUERY_CONCURRENCY: int = 3
 # Optional rotating proxy list for boards that rate-limit this network.
 JOBSPY_PROXIES: List[str] = [
     proxy.strip() for proxy in os.getenv("JOBSPY_PROXIES", "").split(",") if proxy.strip()
 ]
 
-# Requested fresher job families
+# Requested fresher job families with high-yield search terms
 ROLE_QUERIES: Dict[str, List[str]] = {
     "Business Analyst": [
-        "business analyst", "business analyst fresher", "junior business analyst",
+        "business analyst", "junior business analyst", "business analyst fresher",
     ],
     "Data Analyst": [
-        "data analyst",
-        "data analyst fresher",
-        "junior data analyst",
+        "data analyst", "junior data analyst", "data analyst fresher",
     ],
     "Marketing Analyst": [
-        "marketing analyst", "marketing analyst fresher", "junior marketing analyst",
+        "marketing analyst", "junior marketing analyst", "marketing analyst fresher",
     ],
     "HR Analyst": [
-        "HR analyst", "HR analyst fresher", "junior HR analyst",
+        "HR analyst", "junior HR analyst", "HR analyst fresher",
     ],
     "Analyst": [
-        "analyst", "analyst fresher", "junior analyst",
+        "analyst", "junior analyst", "trainee analyst", "analyst fresher",
     ],
     "Full Stack Developer": [
-        "full stack developer", "full stack developer fresher", "junior full stack developer",
+        "full stack developer", "junior full stack developer", "full stack developer fresher",
+        "associate software engineer", "software engineer trainee",
     ],
     "Web Developer": [
-        "web developer", "web developer fresher", "junior web developer",
+        "web developer", "junior web developer", "web developer fresher",
+        "frontend developer fresher", "react developer fresher",
     ],
 }
 

@@ -38,11 +38,12 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
 def _configured_completion_limit() -> int:
     try:
-        configured = int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "4096"))
+        configured = int(os.getenv("LLM_MAX_COMPLETION_TOKENS", "2048"))
     except (TypeError, ValueError):
-        configured = 4096
+        configured = 2048
     return max(1024, min(configured, 8192))
 
 
@@ -146,12 +147,7 @@ def get_configured_llm() -> tuple[Any, str]:
             from langchain_groq import ChatGroq
             model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
             logger.info(f"Using Groq LLM: {model_name}")
-            return ChatGroq(
-                api_key=groq_key,
-                model_name=model_name,
-                temperature=0.15,
-                max_tokens=LLM_MAX_COMPLETION_TOKENS,
-            ), "groq"
+            return ChatGroq(api_key=groq_key, model_name=model_name, temperature=0.15, max_tokens=LLM_MAX_COMPLETION_TOKENS), "groq"
         except Exception as exc:
             logger.error(f"Failed to initialize ChatGroq: {exc}")
             raise
@@ -254,47 +250,27 @@ def extract_json_object(text: str) -> dict[str, Any]:
 
 
 def extract_json_array(text: str) -> list[dict[str, Any]]:
-    """Extract a JSON array or recognized wrapper, reporting malformed output."""
+    """Parse question arrays/wrappers; raise on malformed output instead of hiding it."""
     if not isinstance(text, str):
         raise ValueError(f"Expected text response, received {type(text).__name__}")
-    text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text).strip()
-
+    cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
     decoder = json.JSONDecoder()
     errors: list[json.JSONDecodeError] = []
-    for start, char in enumerate(text):
+    for offset, char in enumerate(cleaned):
         if char not in "[{":
             continue
         try:
-            data, _ = decoder.raw_decode(text[start:])
+            data, _ = decoder.raw_decode(cleaned[offset:])
             if isinstance(data, list):
                 return data
             if isinstance(data, dict):
                 for key in ("questions", "questions_and_answers", "qna", "items", "interview_questions"):
-                    if key in data and isinstance(data[key], list):
+                    if isinstance(data.get(key), list):
                         return data[key]
         except json.JSONDecodeError as exc:
             errors.append(exc)
-
-    # Truncation Recovery: If generation stopped mid-array due to max_tokens,
-    # find the last closed '}' object and append ']'
-    first_bracket = text.find("[")
-    if first_bracket != -1:
-        truncated_slice = text[first_bracket:]
-        last_brace = truncated_slice.rfind("}")
-        while last_brace > 0:
-            candidate = truncated_slice[: last_brace + 1].strip()
-            candidate = re.sub(r",\s*$", "", candidate) + "\n]"
-            try:
-                candidate = re.sub(r",\s*([\]}])", r"\1", candidate)
-                data = json.loads(candidate)
-                if isinstance(data, list) and data:
-                    logger.info(f"Recovered {len(data)} completed questions from truncated JSON response.")
-                    return data
-            except Exception:
-                last_brace = truncated_slice[:last_brace].rfind("}")
-
-    if not text:
+    if not cleaned:
         raise ValueError("The LLM returned an empty response")
     if errors:
         error = errors[-1]
@@ -321,15 +297,11 @@ def _parse_qna_response(response: Any) -> list[dict[str, Any]]:
             for part in content
         )
     parsed = extract_json_array(content)
-    items = [
-        item for item in parsed
-        if isinstance(item, dict)
-        and isinstance(item.get("question"), str)
-        and item["question"].strip()
-    ]
-    if parsed and not items:
+    questions = [item for item in parsed if isinstance(item, dict)
+                 and isinstance(item.get("question"), str) and item["question"].strip()]
+    if parsed and not questions:
         raise ValueError("JSON was valid but contained no objects with a non-empty 'question' field")
-    return items
+    return questions
 
 
 # ---------------------------------------------------------------------------
@@ -364,22 +336,11 @@ def node_batch_content(state: ResearchState) -> dict[str, Any]:
     """Node 2: Batch scraped text to respect token/context limits."""
     logger.info("[Node 2/5] Batching raw content into token-safe context chunks...")
     raw = state.get("raw_data", {})
-    i_sources = [
-        source for source in raw.get("interview_sources", [])
-        if source.get("http_status") == 200
-        and (source.get("excerpts") or source.get("full_text_sample"))
-    ]
-    p_sources = [
-        source for source in raw.get("project_sources", [])
-        if source.get("http_status") == 200
-        and (source.get("excerpts") or source.get("full_text_sample"))
-    ]
-    logger.info(
-        "Usable source pages: %d interview, %d project (discarded %d interview, %d project failures/empty pages).",
-        len(i_sources), len(p_sources),
-        len(raw.get("interview_sources", [])) - len(i_sources),
-        len(raw.get("project_sources", [])) - len(p_sources),
-    )
+    i_sources = [source for source in raw.get("interview_sources", [])
+                 if source.get("http_status") == 200 and (source.get("excerpts") or source.get("full_text_sample"))]
+    p_sources = [source for source in raw.get("project_sources", [])
+                 if source.get("http_status") == 200 and (source.get("excerpts") or source.get("full_text_sample"))]
+    logger.info("Usable source pages: %d interview, %d project; discarded failed/empty pages.", len(i_sources), len(p_sources))
 
     i_batches = chunk_text_batches(i_sources, max_chars_per_batch=12000)
     p_batches = chunk_text_batches(p_sources, max_chars_per_batch=12000)
@@ -452,22 +413,20 @@ Respond ONLY with valid JSON. Do not include markdown code block backticks (no `
 
 
 def node_extract_interview_qna(state: ResearchState) -> dict[str, Any]:
-    """Extract source-backed interview questions and generate concise preparation notes."""
+    """Extract source-backed questions and generate concise preparation notes."""
     company = state["company"]
     role = state["role"]
     llm, provider = get_configured_llm()
     i_batches = state.get("interview_batches", [])
-
     if not i_batches:
         raise RuntimeError(f"No interview evidence scraped for {company} ({role}).")
 
     logger.info("[Node 4/5] Extracting source-backed questions across %d batches via %s...", len(i_batches), provider.upper())
     all_qna: list[dict[str, Any]] = []
     failures: list[str] = []
-
     for b_idx, batch in enumerate(i_batches[:3]):
-        if b_idx > 0:
-            time.sleep(2.0)
+        if b_idx:
+            time.sleep(5.0)
         prompt = f"""Extract only interview questions explicitly stated or clearly reported in this source text for {company} ({role}). Do not invent questions or claim generic topics were asked. If no specific question is present, return {{"questions": []}}.
 For each question, provide concise fields: question, category, difficulty, interviewer_focus, how_to_answer, exemplary_response, traps_to_avoid, source_reference. Keep answers brief (1-3 sentences); do not generate code unless the source names a coding problem.
 Return at most 6 items as JSON: {{"questions": [{{"question":"...","category":"...","difficulty":"...","interviewer_focus":"...","how_to_answer":"...","exemplary_response":"...","traps_to_avoid":"...","source_reference":"..."}}]}}

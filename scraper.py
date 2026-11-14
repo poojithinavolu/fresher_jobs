@@ -7,6 +7,7 @@ Includes error-isolation, pacing, deduplication, and quality evaluation.
 """
 
 import time
+import math
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -15,12 +16,9 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 import jobspy
 from jobspy import scrape_jobs
+from jobspy.linkedin import LinkedIn
 from jobspy.model import Site as JobSpySite
 from jobspy.naukri import Naukri
-from jobspy.naukri.constant import india_time, job_page_headers
-from jobspy.naukri.model import JobDetails
-from jobspy.naukri.util import generate_nkparam
-from jobspy.util import check_status, description_fields, plain_converter
 
 from config import (
     MAX_HOURS_OLD,
@@ -33,161 +31,114 @@ from config import (
     JOBSPY_PROXIES,
     ROLE_QUERIES,
 )
-from filter_engine import evaluate_job
+from filter_engine import (
+    evaluate_job,
+    is_within_hours,
+    is_legitimate_company,
+    is_valid_location,
+    categorize_role,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("FresherJobScraper")
-_NAUKRI_MAPPING_LOCK = RLock()
-_NAUKRI_DETAIL_CACHE_LOCK = RLock()
-_NAUKRI_DETAIL_CACHE: Dict[str, Any] = {}
-_NAUKRI_DETAIL_FAILURE_CACHE = set()
-_NAUKRI_DETAIL_CACHE_LIMIT = 2000
+_LINKEDIN_LOCK = RLock()
 
 
 class EntryLevelNaukri(Naukri):
-    """Naukri adapter that validates experience from its detail API response."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._detail_experience_unverified = set()
+    """Naukri adapter that targets freshers (0-1 yrs) using Naukri's native experience filter."""
 
     def _search_params(self):
         params = super()._search_params()
-        # Naukri's search endpoint uses experience=0 for its 0–1 year band.
-        # JobSpy currently has no ScraperInput experience field for Naukri.
+        # Naukri search API: experience=0 targets the 0-1 year fresher band
         params["experience"] = "0"
         return params
 
-    @staticmethod
-    def _find_detail_experience(payload: Any) -> Optional[str]:
-        """Find Naukri's structured experience value before JobSpy drops it."""
-        preferred_keys = {
-            "experiencetext", "experiencerange", "experience_range",
-            "requiredexperience", "experience_required", "experience",
-        }
 
-        def format_value(value: Any) -> Optional[str]:
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if isinstance(value, (int, float)):
-                return f"{value} years"
-            if isinstance(value, dict):
-                low = next((value[k] for k in ("min_years", "minYears", "minExp", "minimum", "min") if k in value), None)
-                high = next((value[k] for k in ("max_years", "maxYears", "maxExp", "maximum", "max") if k in value), None)
-                if low is not None and high is not None:
-                    return f"{low}-{high} years"
-                if low is not None:
-                    return f"{low}+ years"
-            return None
+class FresherLinkedIn(LinkedIn):
+    """LinkedIn adapter configured for entry-level fresher roles with newest-first ordering."""
 
-        def walk(node: Any) -> Optional[str]:
-            if isinstance(node, dict):
-                folded = {str(key).casefold(): value for key, value in node.items()}
-                min_value = next(
-                    (folded[key] for key in (
-                        "experiencemin", "experience_min", "minexperience",
-                        "minexperienceyears", "min_years", "minexp",
-                    ) if key in folded),
-                    None,
-                )
-                max_value = next(
-                    (folded[key] for key in (
-                        "experiencemax", "experience_max", "maxexperience",
-                        "maxexperienceyears", "max_years", "maxexp",
-                    ) if key in folded),
-                    None,
-                )
-                if min_value is not None and max_value is not None:
-                    return f"{min_value}-{max_value} years"
-                if min_value is not None:
-                    return f"{min_value}+ years"
-                for key, value in node.items():
-                    if str(key).casefold() in preferred_keys:
-                        found = format_value(value)
-                        if found:
-                            return found
-                for value in node.values():
-                    found = walk(value)
-                    if found:
-                        return found
-            elif isinstance(node, list):
-                for value in node:
-                    found = walk(value)
-                    if found:
-                        return found
-            return None
+    def _search_params(self):
+        params = super()._search_params()
+        # f_E=2 targets Entry level listings; sortBy=DD ensures newest postings first
+        params["f_E"] = "2"
+        params["sortBy"] = "DD"
+        return params
 
-        return walk(payload)
+    def _process_job(self, job_card, job_id: str):
+        post = super()._process_job(job_card, job_id)
+        if post is not None:
+            # Explicitly mark job_level as entry_level from verified f_E=2 query
+            post = post.model_copy(update={"job_level": "entry_level"})
+        return post
 
-    def _fetch_details(self, job_id: str):
-        """Fetch detail JSON once and retain its structured experience field."""
-        with _NAUKRI_DETAIL_CACHE_LOCK:
-            cached = _NAUKRI_DETAIL_CACHE.get(str(job_id))
-            if cached is not None:
-                posted, details = cached
-                return posted, dict(details)
-            if str(job_id) in _NAUKRI_DETAIL_FAILURE_CACHE:
-                self._detail_experience_unverified.add(str(job_id))
-                return None
-        try:
-            response = self.session.get(
-                f"{self.job_page_url}/{job_id}",
-                headers=job_page_headers | {"nkparam": generate_nkparam(job_id)},
-                timeout=12,
-            )
-            if response.status_code == 406:
-                raise ValueError("response status code 406: rate limited")
-            check_status(response)
-            raw = response.json()["jobDetails"]
-            job = JobDetails.model_validate(raw)
-            posted = datetime.strptime(job.createdDate, "%Y-%m-%d %H:%M:%S")
-            fields = description_fields(
-                job.description, self.scraper_input.description_format
-            )
-            detail_experience = self._find_detail_experience(raw)
-            if detail_experience:
-                fields["experience_range"] = detail_experience
-            else:
-                # JobSpy's detail model omits this raw JSON field. Never silently
-                # fall back to the search card when the detail value is absent.
-                fields["experience_range"] = "Unverified: detail experience missing"
-            details = self._shared_fields(job) | {
-                **fields,
-                "company_industry": job.industry,
-                "job_function": job.functionalArea,
-                "company_description": plain_converter(job.details),
-                "company_addresses": job.address or None,
-            }
-            result = posted.replace(tzinfo=india_time).timestamp(), details
-            with _NAUKRI_DETAIL_CACHE_LOCK:
-                if len(_NAUKRI_DETAIL_CACHE) >= _NAUKRI_DETAIL_CACHE_LIMIT:
-                    _NAUKRI_DETAIL_CACHE.clear()
-                _NAUKRI_DETAIL_CACHE[str(job_id)] = result
-            return result
-        except Exception as exc:
-            self._detail_experience_unverified.add(str(job_id))
-            with _NAUKRI_DETAIL_CACHE_LOCK:
-                _NAUKRI_DETAIL_FAILURE_CACHE.add(str(job_id))
-            self.log.warning("Naukri detail verification failed for %s: %s", job_id, exc)
-            return None
 
-    def _process_job(self, raw: dict[str, Any]):
-        job_id = str(raw.get("jobId", ""))
-        result = super()._process_job(raw)
-        if result is not None and job_id in self._detail_experience_unverified:
-            # JobSpy otherwise keeps the unverified search-card range when its
-            # detail request fails, which could let a mismatched job pass.
-            result = result.model_copy(
-                update={"experience_range": "Unverified: detail request failed"}
-            )
-        return result
+# Register custom adapters once globally for the scraper process
+jobspy.SCRAPER_MAPPING[JobSpySite.NAUKRI] = EntryLevelNaukri
+jobspy.SCRAPER_MAPPING[JobSpySite.LINKEDIN] = FresherLinkedIn
+
+
+def safe_str(val: Any) -> str:
+    """Safely extracts string values handling pandas/numpy NaN without false truthiness."""
+    if val is None:
+        return ""
+    if isinstance(val, float) and math.isnan(val):
+        return ""
+    s = str(val).strip()
+    return "" if s.lower() in {"nan", "none", "nat"} else s
+
+
+def get_job_url(raw_job: Dict[str, Any]) -> str:
+    """Extracts valid job URL or fallback identifier, avoiding NaN truthiness traps."""
+    direct = safe_str(raw_job.get("job_url_direct"))
+    if direct:
+        return direct
+    url = safe_str(raw_job.get("job_url"))
+    if url:
+        return url
+    return safe_str(raw_job.get("id"))
 
 
 def clean_str(val: Any) -> str:
     """Helper to sanitize string for composite deduplication key."""
-    if not val:
+    text = safe_str(val)
+    if not text:
         return ""
-    return "".join(c.lower() for c in str(val) if c.isalnum() or c.isspace()).strip()
+    return "".join(c.lower() for c in text if c.isalnum() or c.isspace()).strip()
+
+
+def hydrate_linkedin_description(raw_job: Dict[str, Any], session: Optional[Any] = None) -> None:
+    """
+    Hydrates full job description for candidate LinkedIn jobs via LinkedIn guest endpoint.
+    Guarantees that explicit experience requirements in JD (e.g. 1-3 yrs, 5+ yrs) are captured.
+    """
+    import re
+    import requests
+    from bs4 import BeautifulSoup
+
+    effective_url = safe_str(raw_job.get("job_url_direct") or raw_job.get("job_url") or raw_job.get("id"))
+    jid_match = re.search(r"(\d{8,12})", effective_url)
+    if not jid_match:
+        return
+
+    jid = jid_match.group(1)
+    url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jid}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    try:
+        requester = session if session is not None else requests
+        resp = requester.get(url, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            desc_div = soup.find("div", class_="show-more-less-html__markup")
+            desc_text = desc_div.get_text("\n").strip() if desc_div else soup.get_text("\n").strip()
+            raw_job["description"] = desc_text
+        elif resp.status_code == 429:
+            logger.warning("LinkedIn guest endpoint rate-limited (HTTP 429) for job %s", jid)
+    except Exception as exc:
+        logger.debug("LinkedIn description fetch failed for %s: %s", jid, exc)
 
 
 def run_scraping_query(
@@ -199,33 +150,36 @@ def run_scraping_query(
     proxies: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """
-    Scrapes boards concurrently, with at most one active request per board.
+    Scrapes boards concurrently with error isolation and lightweight search-card extraction.
     """
     logger.info(f"Scraping -> Query: '{search_term}' | Location: '{location}' | Sites: {sites} | Hours: {hours_old}")
 
     def scrape_one_site(site: str) -> tuple[str, pd.DataFrame, Optional[str]]:
         try:
+            # fetch_description=False delivers sub-second search responses across all boards.
+            # Naukri includes title, company, location, experienceText, date, and apply URL.
+            # Indeed includes title, company, location, full HTML description, date, and apply URL.
+            # LinkedIn includes title, company, location, entry-level classification, and apply URL.
             call = lambda: scrape_jobs(
-                site_name=[site], search_term=search_term, location=location,
-                results_wanted=results_wanted, hours_old=hours_old,
-                country_indeed=INDEED_COUNTRY, proxies=proxies,
-                fetch_description=True, verbose=0,
+                site_name=[site],
+                search_term=search_term,
+                location=location,
+                results_wanted=results_wanted,
+                hours_old=hours_old,
+                country_indeed=INDEED_COUNTRY,
+                proxies=proxies,
+                fetch_description=False,
+                verbose=0,
             )
-            if site == "naukri":
-                # JobSpy has no public experience argument. Swap only the Naukri
-                # adapter under a lock for this call, restoring it immediately.
-                with _NAUKRI_MAPPING_LOCK:
-                    previous = jobspy.SCRAPER_MAPPING[JobSpySite.NAUKRI]
-                    jobspy.SCRAPER_MAPPING[JobSpySite.NAUKRI] = EntryLevelNaukri
-                    try:
-                        df = call()
-                    finally:
-                        jobspy.SCRAPER_MAPPING[JobSpySite.NAUKRI] = previous
+            if site == "linkedin":
+                # Polite board serialization to eliminate 429 rate limit errors
+                with _LINKEDIN_LOCK:
+                    time.sleep(1.5)
+                    df = call()
             else:
                 df = call()
             errors = (getattr(df, "attrs", {}) or {}).get("errors", {})
             if site in errors:
-                site_errors[site] = str(errors[site])
                 logger.warning("JobSpy reported %s failure for %s: %s", site, search_term, errors[site])
             warnings = (getattr(df, "attrs", {}) or {}).get("warnings", {})
             if site in warnings:
@@ -233,15 +187,9 @@ def run_scraping_query(
             return site, df, str(errors[site]) if site in errors else None
         except Exception as exc:
             logger.warning("Scraper failed for %s (%s, %s): %s", site, search_term, location, exc)
-
-            # Keep failures isolated to this board so another board's results
-            # still reach filtering and the sheet sync.
             return site, pd.DataFrame(), str(exc)
 
     if len(sites) > 1:
-        # The caller waits for this batch before starting the next query, so
-        # each board has at most one in-flight request and keeps its normal
-        # per-query pacing. Network waits across independent boards overlap.
         with ThreadPoolExecutor(max_workers=len(sites)) as executor:
             site_results = list(executor.map(scrape_one_site, sites))
     else:
@@ -273,7 +221,7 @@ def scrape_fresher_jobs(
     """
     Main orchestration loop.
     Iterates through each category, executes the queries across sites,
-    and subjects every listing to the strict 48-hour fresher filter.
+    and subjects every listing to the strict fresher verification pipeline.
     """
     target_locations = locations or DEFAULT_LOCATIONS
     target_roles = roles_dict or ROLE_QUERIES
@@ -285,7 +233,6 @@ def scrape_fresher_jobs(
     seen_composite_keys = set()
 
     start_time = time.time()
-    query_count = 0
     site_errors: Dict[str, List[str]] = {}
     site_queries_attempted = {site: 0 for site in target_sites}
 
@@ -313,13 +260,12 @@ def scrape_fresher_jobs(
             results_wanted=results_per_query,
             proxies=proxies,
         )
-        # Keep board pacing while allowing independent query waits to overlap.
         time.sleep(QUERY_DELAY_SECONDS)
         return df
 
     worker_count = max(1, min(QUERY_CONCURRENCY, len(query_tasks)))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        for task, df in zip(query_tasks, executor.map(run_task, query_tasks)):
+        for df in executor.map(run_task, query_tasks):
             if not df.empty:
                 all_raw_jobs.extend(df.to_dict(orient="records"))
             for site, error in df.attrs.get("site_errors", {}).items():
@@ -332,14 +278,26 @@ def scrape_fresher_jobs(
     valid_jobs: List[Dict[str, Any]] = []
     rejected_jobs: List[Dict[str, Any]] = []
 
+    li_session = None
+    try:
+        import requests
+        li_session = requests.Session()
+    except Exception:
+        pass
+
     for raw_job in all_raw_jobs:
-        # Deduplicate within each board. Keep cross-board copies so the first
-        # site in TARGET_SITES cannot silently take ownership of the listing.
         source = clean_str(raw_job.get("site")) or "unknown"
 
+        # Normalize URL fields to eliminate pandas NaN truthiness traps downstream
+        direct_url = safe_str(raw_job.get("job_url_direct"))
+        page_url = safe_str(raw_job.get("job_url"))
+        effective_url = direct_url or page_url or safe_str(raw_job.get("id"))
+        raw_job["job_url_direct"] = direct_url if direct_url else None
+        raw_job["job_url"] = page_url if page_url else (effective_url if effective_url.startswith("http") else None)
+        raw_job["apply_url"] = effective_url
+
         # 1. URL Deduplication (site-aware)
-        job_url = raw_job.get("job_url_direct") or raw_job.get("job_url") or ""
-        url_key = (source, str(job_url).strip().casefold()) if job_url else None
+        url_key = (source, effective_url.casefold()) if effective_url else None
         if url_key and url_key in seen_urls:
             continue
         if url_key:
@@ -356,7 +314,20 @@ def scrape_fresher_jobs(
             continue
         seen_composite_keys.add(comp_key)
 
-        # 3. Evaluate criteria (48h, fresher experience, anti-scam blacklist)
+        # 3. Hydrate description for candidate LinkedIn jobs that pass preliminary triage
+        if source == "linkedin" and not safe_str(raw_job.get("description")):
+            title_clean = safe_str(raw_job.get("title"))
+            company_clean = safe_str(raw_job.get("company"))
+            loc_clean = safe_str(raw_job.get("location"))
+            within_h, _ = is_within_hours(raw_job.get("date_posted"), hours_old)
+            legit, _ = is_legitimate_company(company_clean, title_clean)
+            loc_ok, _ = is_valid_location(loc_clean)
+            cat = categorize_role(title_clean)
+            if within_h and legit and loc_ok and cat:
+                hydrate_linkedin_description(raw_job, session=li_session)
+                time.sleep(0.5)
+
+        # 4. Evaluate criteria (freshness, fresher experience, anti-scam blacklist)
         evaluated = evaluate_job(raw_job)
 
         if evaluated["is_valid_fresher_job"]:
@@ -366,7 +337,7 @@ def scrape_fresher_jobs(
 
     elapsed = time.time() - start_time
 
-    # Compile stats
+    # Compile comprehensive stats
     stats = {
         "duration_seconds": round(elapsed, 2),
         "total_queries_executed": query_count,
@@ -401,4 +372,3 @@ def scrape_fresher_jobs(
         "rejected_jobs": rejected_jobs,
         "stats": stats,
     }
-

@@ -38,7 +38,7 @@ CREDENTIALS_FILE = os.getenv(
 )
 
 def format_jobs_rows(jobs: List[Dict[str, Any]]) -> List[List[Any]]:
-    """Formats jobs to the retained A:K Google Sheet columns."""
+    """Formats jobs to the retained A:K Google Sheet columns with strict completeness validation."""
     rows = []
     def cell(value: Any) -> Any:
         if value is None or (isinstance(value, float) and math.isnan(value)):
@@ -50,28 +50,66 @@ def format_jobs_rows(jobs: List[Dict[str, Any]]) -> List[List[Any]]:
         return value
 
     for j in jobs:
-        exp = str(cell(j.get("experience_range"))) or "Unspecified"
+        title = str(cell(j.get("title"))).strip()
+        company = str(cell(j.get("company"))).strip()
+        location = str(cell(j.get("location"))).strip()
+        category = str(cell(j.get("tech_category"))).strip()
+        date_p = str(cell(j.get("date_posted"))).strip()
+        exp = str(cell(j.get("experience_range"))).strip()
+        min_sal = cell(j.get("min_amount"))
+        max_sal = cell(j.get("max_amount"))
+        apply_url = str(cell(j.get("apply_url") or j.get("job_url_direct") or j.get("job_url"))).strip()
+        source = str(cell(j.get("site"))).upper()
+        last_updated = datetime.now().isoformat(timespec="seconds")
+
+        # STRICT QUALITY GATEKEEPER:
+        # Every single field must be present, valid, and complete before pushing to the Google Sheet.
+        if not title or not company or not location or not category:
+            continue
+        if not apply_url.startswith("http"):
+            continue
+        if not exp or exp.lower() in {"not specified", "unspecified", "none", "nan"}:
+            continue
+        if not min_sal or not max_sal:
+            continue
+
         rows.append([
-            cell(j.get("title")),
-            cell(j.get("company")),
-            cell(j.get("location")),
-            cell(j.get("tech_category")),
-            cell(j.get("date_posted")),
-            exp,
-            cell(j.get("min_amount")),
-            cell(j.get("max_amount")),
-            cell(j.get("job_url_direct") or j.get("job_url")),
-            str(cell(j.get("site"))).upper(),
-            datetime.now().isoformat(timespec="seconds"),
+            title, company, location, category, date_p, exp,
+            min_sal, max_sal, apply_url, source, last_updated
         ])
     return rows
+
+
+def is_valid_sheet_row(row: List[Any]) -> bool:
+    """Verifies that a sheet row is complete, has valid apply URL, and not outdated/bad."""
+    if len(row) < 10:
+        return False
+    title = str(row[0] or "").strip()
+    company = str(row[1] or "").strip()
+    location = str(row[2] or "").strip()
+    exp = str(row[5] or "").strip().lower()
+    apply_url = str(row[8] or "").strip()
+
+    if not title or not company:
+        return False
+    if not apply_url.startswith("http"):
+        return False
+    if exp in {"not specified", "unspecified", "none", "nan", ""}:
+        return False
+
+    # Strict location check using the filter engine (Mumbai / Hyderabad / Remote only)
+    from filter_engine import is_valid_location
+    loc_ok, _ = is_valid_location(location)
+    if not loc_ok:
+        return False
+    return True
 
 
 def merge_job_rows(
     existing_rows: List[List[Any]],
     incoming_rows: List[List[Any]],
 ) -> List[List[Any]]:
-    """Upsert incoming jobs by Apply URL, preserving the existing sheet history."""
+    """Upsert incoming jobs by Apply URL, purging any corrupted/incomplete historical rows."""
     width = 11
     merged: List[List[Any]] = []
     row_index_by_key: Dict[tuple, int] = {}
@@ -90,9 +128,10 @@ def merge_job_rows(
             str(row[2] or "").strip().casefold(),
         )
 
+    # Only preserve historical rows that pass the strict quality & completeness check
     for source_row in existing_rows:
         row = normalized(source_row)
-        if not any(str(value).strip() for value in row):
+        if not is_valid_sheet_row(row):
             continue
         job_key = key(row)
         if job_key in row_index_by_key:
@@ -103,6 +142,8 @@ def merge_job_rows(
 
     for source_row in incoming_rows:
         row = normalized(source_row)
+        if not is_valid_sheet_row(row):
+            continue
         job_key = key(row)
         existing_index = row_index_by_key.get(job_key)
         if existing_index is None:

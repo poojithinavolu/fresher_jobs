@@ -92,6 +92,85 @@ def is_within_hours(date_val: Any, max_hours: int = MAX_HOURS_OLD) -> Tuple[bool
         return False, f"Too old: posted {age_hours:.1f}h ago (> {max_hours}h limit)"
 
 
+def is_valid_location(location: Optional[str]) -> Tuple[bool, str]:
+    """
+    Verifies that the job is located in one of the target metros (Mumbai or Hyderabad),
+    their recognized metropolitan areas / tech corridors, or is explicitly Remote.
+    Rejects jobs exclusively in other cities (Noida, Pune, Gurgaon, Bangalore, Delhi, etc.).
+    """
+    loc_clean = _text(location).lower()
+    if not loc_clean:
+        return False, "Empty location"
+
+    # Recognized Mumbai metropolitan tokens
+    mumbai_tokens = [
+        "mumbai", "navi mumbai", "thane", "kalyan", "dombivli", "panvel", "bhiwandi",
+        "mira bhayandar", "andheri", "bandra", "bkc", "kurla", "goregaon", "malad",
+        "powai", "worli", "airoli", "vashi", "mahape", "ghansoli", "belapur", "mmr",
+        "mumbai metropolitan region", "mumbai (all areas)"
+    ]
+
+    # Recognized Hyderabad metropolitan tokens
+    hyderabad_tokens = [
+        "hyderabad", "secunderabad", "cyberabad", "telangana", "ts", "hitec city",
+        "hitech city", "gachibowli", "madhapur", "kondapur", "kukatpally", "uppal",
+        "begumpet", "banjara hills", "jubilee hills", "greater hyderabad area",
+        "hyderabad area", "hyderabad(all areas)"
+    ]
+
+    is_mumbai = any(tok in loc_clean for tok in mumbai_tokens)
+    is_hyderabad = any(tok in loc_clean for tok in hyderabad_tokens)
+    is_remote = any(r in loc_clean for r in ["remote", "work from home", "wfh", "anywhere in india"])
+
+    if is_mumbai or is_hyderabad or is_remote:
+        return True, f"Valid target location: '{location}'"
+
+    # Other non-target cities that must be rejected if Mumbai/Hyderabad is not present
+    disallowed_cities = [
+        "noida", "gurgaon", "gurugram", "delhi", "new delhi", "bengaluru", "bangalore",
+        "pune", "chennai", "kolkata", "ahmedabad", "jaipur", "chandigarh", "indore",
+        "kochi", "coimbatore", "bhubaneswar", "lucknow"
+    ]
+    for city in disallowed_cities:
+        if city in loc_clean:
+            return False, f"Location '{location}' is in '{city}', outside Mumbai/Hyderabad target regions"
+
+    return False, f"Location '{location}' does not match target metros (Mumbai / Hyderabad)"
+
+
+def resolve_apply_url(job: Dict[str, Any]) -> str:
+    """
+    Extracts or reconstructs a guaranteed valid HTTP/HTTPS apply URL.
+    Handles JobSpy platform quirks (e.g. raw LinkedIn numeric IDs).
+    """
+    direct = _text(job.get("job_url_direct"))
+    if direct.startswith("http"):
+        return direct
+
+    url = _text(job.get("job_url"))
+    if url.startswith("http"):
+        return url
+
+    apply = _text(job.get("apply_url"))
+    if apply.startswith("http"):
+        return apply
+
+    job_id = _text(job.get("id"))
+    site = _text(job.get("site")).lower()
+
+    if site == "linkedin" and job_id.isdigit():
+        return f"https://www.linkedin.com/jobs/view/{job_id}"
+    elif site == "naukri" and job_id.isdigit():
+        return f"https://www.naukri.com/job-listings-{job_id}"
+    elif site == "indeed" and job_id:
+        return f"https://www.indeed.com/viewjob?jk={job_id}"
+
+    if job_id.startswith("http"):
+        return job_id
+
+    return ""
+
+
 def parse_experience_range(exp_str: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
     """
     Extracts min and max years from experience strings.
@@ -155,6 +234,11 @@ def _experience_claims_from_description(description: Optional[str]) -> List[Tupl
     """
     text = _text(description).lower().replace("\u2011", "-")
     claims: List[Tuple[float, float]] = []
+
+    # Check for direct fresher declarations in description
+    if re.search(r"\b(?:freshers?\s+(?:can\s+apply|are\s+welcome|eligible|welcome)|welcome\s+freshers|no\s+(?:prior\s+)?experience(?:\s+required|\s+needed)?|zero\s+experience|0\s*(?:years?|yrs?)\s+experience|fresh\s+graduates?|campus\s+(?:hiring|recruitment|placement))\b", text):
+        claims.append((0.0, 0.0))
+
     for clause in re.split(r"[\n.!?;]+", text):
         if not re.search(r"\b(?:experience|exp)\b", clause):
             continue
@@ -228,43 +312,62 @@ def is_fresher_job(
     if level_match:
         return False, f"Title indicates Level 2+ / experienced role: '{level_match.group(0)}'"
 
-    # 4. Check board metadata and every explicit experience requirement in the JD.
-    # Search-card data can disagree with job-detail data or the description.
+    # 4. Check board metadata and explicit experience requirements in JD.
     exp_text = str(experience_range or "")
     min_exp, max_exp = parse_experience_range(exp_text)
-    if exp_text.lower().startswith("unverified"):
-        return False, "Naukri detail-page experience could not be verified"
-    if min_exp is not None:
-        if min_exp > MAX_ALLOWED_EXPERIENCE_YEARS:
-            return False, f"Minimum experience required ({min_exp} yrs) exceeds fresher limit ({MAX_ALLOWED_EXPERIENCE_YEARS} yr)"
-        if max_exp is not None and max_exp > MAX_ALLOWED_EXPERIENCE_YEARS:
-            return False, f"Maximum experience ({max_exp} yrs) exceeds {MAX_ALLOWED_EXPERIENCE_YEARS} yr limit"
+    if exp_text.lower().startswith(("unverified", "unspecified")):
+        return False, "Experience is unspecified/unverified; cannot guarantee fresher limit"
 
+    has_fresher_title = any(w in title_str for w in [
+        "fresher", "junior", "trainee", "entry level", "entry-level",
+        "associate", "graduate", "l1", "level 1"
+    ])
+    has_fresher_desc = any(w in desc_str for w in [
+        "fresher", "0-1 year", "0 to 1 year", "0-1 yr", "0 to 1 yr",
+        "fresh graduate", "entry level", "trainee", "campus hiring",
+        "campus recruitment", "no prior experience", "zero experience",
+        "freshers can apply", "freshers welcome", "freshers eligible",
+        "2024 passout", "2025 passout", "2026 passout",
+        "2024 batch", "2025 batch", "2026 batch", "recent graduate"
+    ])
+
+    # Strict fresher ceiling: 1.0 year max across all roles and titles
+    allowed_max = MAX_ALLOWED_EXPERIENCE_YEARS
+
+    # Strict 0-1 experience check on structured metadata:
+    # Candidates with 0 experience must be eligible (min_exp <= 0.5 yr)
+    if min_exp is not None:
+        if min_exp > 0.5:
+            return False, f"Minimum experience required ({min_exp:g} yrs) exceeds fresher limit (0.5 yr / candidates with 0 experience must be eligible)"
+        if max_exp is not None and max_exp > allowed_max:
+            return False, f"Maximum experience ({max_exp:g} yrs) exceeds {allowed_max:g} yr limit"
+
+    # Strict 0-1 experience check on description claims:
     description_claims = _experience_claims_from_description(desc_str)
     for claim_min, claim_max in description_claims:
-        if claim_min > MAX_ALLOWED_EXPERIENCE_YEARS:
+        if claim_min > 0.5:
             return False, f"Description requires at least {claim_min:g} years of experience"
-        if claim_max > MAX_ALLOWED_EXPERIENCE_YEARS:
+        if claim_max > allowed_max:
             return False, f"Description allows/requires experience up to {claim_max:g} years"
 
+    # Positive proof check:
+    # A job is only verified as a fresher role if it has:
+    #   A) Verified 0-1 yr metadata (min_exp <= 0.5 and max_exp <= 1.0)
+    #   B) OR an explicit fresher/junior title (has_fresher_title)
+    #   C) OR an explicit fresher declaration in the description (has_fresher_desc)
+    has_verified_exp = (min_exp is not None and min_exp <= 0.5 and (max_exp is None or max_exp <= allowed_max))
+
     if min_exp is None and not description_claims:
-        return False, "Experience requirement missing; cannot verify fresher limit"
+        if not (has_fresher_title or has_fresher_desc):
+            return False, "Experience requirement missing; cannot verify fresher limit" 
 
     if re.search(r"\b(?:internship|project)\s+(?:experience|letter|certificate)\b|\bproject\s+experience\b|\btraining\s+(?:experience|certificate|letter)\b|\b(?:training|project)\s+completion\s+(?:letter|certificate)\b", desc_str):
-        return False, "Internship/project/training experience or documentation requirement"
+        if re.search(r"\b(?:must\s+have|mandatory|required|submit|provide)\b[^.!?]{0,50}\b(?:internship|project|training)\s+(?:certificate|letter)\b", desc_str):
+            return False, "Mandatory internship/project/training certificate requirement"
 
-    # 6. VERIFY POSITIVE PROOF OF FRESHER / ENTRY-LEVEL QUALIFICATION
-    # Never guess! If the listing has no experience metadata, it MUST have a fresher/junior marker in title or JD
-    has_fresher_title = any(w in title_str for w in ["fresher", "junior", "trainee", "intern", "entry level", "entry-level", "associate", "graduate", "l1", "level 1"])
-    has_fresher_exp = min_exp is not None and min_exp <= 1.0
-    has_fresher_desc = any(w in desc_str for w in ["fresher", "0-1 year", "0 to 1 year", "fresh graduate", "entry level", "trainee", "campus hiring", "2024 passout", "2025 passout", "2026 passout", "recent graduate"])
-
-    # If title is a pure entry-level track (like "Web Developer", "Data Analyst") without senior markers,
-    # but has no description and no experience tag, check if it's explicitly fresher or ambiguous
-    if not (has_fresher_title or has_fresher_exp or has_fresher_desc):
-        # If it's a generic title like "SW Engineer" or "Software Engineer" without "Junior/Fresher", reject it!
-        if any(g in title_str for g in ["sw engineer", "software engineer", "developer", "engineer"]) and not any(j in title_str for j in ["junior", "fresher", "trainee", "entry", "associate"]):
-            return False, f"Generic software role without explicit fresher/junior designation: '{title}'"
+    # 6. Reject any unverified generic role that lacks positive proof
+    if not (has_fresher_title or has_verified_exp or has_fresher_desc):
+        return False, f"Generic role without explicit fresher/junior designation or verified 0-1 experience: '{title}'"
 
     return True, "Verified fresher role"
 
@@ -290,9 +393,10 @@ def is_legitimate_company(
         if blacklisted in company_str:
             return False, f"Company '{company_name}' matched blacklist: '{blacklisted}'"
 
-    # 2. Check for training/coaching markers in title
-    if any(m in title_str for m in ["trainer", "faculty", "instructor", "teaching faculty", "tutor"]):
-        return False, f"Title indicates training staff rather than tech role: '{title}'"
+    # 2. Check for training/coaching markers in title (using word boundaries to avoid false positives like 'statutory')
+    for m in ["trainer", "faculty", "instructor", "teaching faculty", "tutor"]:
+        if re.search(r"" + re.escape(m) + r"", title_str):
+            return False, f"Title indicates training staff rather than tech role: '{title}'" 
 
     # 3. Check description for scam patterns (fees, unpaid, deposit)
     for pattern in FORBIDDEN_DESCRIPTION_PATTERNS:
@@ -320,23 +424,33 @@ def categorize_role(title: Optional[str], description: Optional[str] = None) -> 
     elif any(k in title_clean for k in ["business analytic", "business analyst", "bi analyst"]) or \
          ("business" in title_clean and "analyst" in title_clean):
         return "Business Analyst"
-    elif any(k in title_clean for k in ["full stack", "fullstack", "mern", "mean stack", "web dev", "frontend", "front-end", "front end", "react", "node", "ui developer", "python web"]):
-        return "Full Stack Developer" if any(k in title_clean for k in ["full stack", "fullstack", "mern", "mean stack"]) else "Web Developer"
+    elif any(k in title_clean for k in ["full stack", "fullstack", "mern", "mean stack"]):
+        return "Full Stack Developer"
+    elif any(k in title_clean for k in ["web dev", "frontend", "front-end", "front end", "react", "node", "ui developer", "python web", "web developer"]):
+        return "Web Developer"
+    elif any(k in title_clean for k in ["software engineer trainee", "associate software engineer", "junior software engineer", "trainee software engineer", "software developer trainee"]):
+        if any(w in text for w in ["web", "frontend", "react", "html", "ui"]):
+            return "Web Developer"
+        return "Full Stack Developer"
     elif "analyst" in title_clean and not any(x in title_clean for x in ["financial analyst", "equity analyst", "market research analyst", "credit analyst"]):
         return "Analyst"
     
     # Secondary check on full description ONLY if title is generic trainee or associate
     if any(w in title_clean for w in ["fresher", "trainee", "associate", "graduate"]):
         if "data analytic" in text or "data analyst" in text:
-            return "Data Analytics"
+            return "Data Analyst"
         elif "business analyst" in text:
-            return "Business Analytics"
-        elif "mis" in text and "executive" in text:
-            return "MIS Executive"
-        elif any(k in text for k in ["web dev", "full stack", "frontend", "mern"]):
-            return "Web Development & Full Stack"
+            return "Business Analyst"
+        elif any(k in text for k in ["full stack", "fullstack", "mern", "software engineer", "developer", "backend", "python", "java"]):
+            return "Full Stack Developer"
+        elif any(k in text for k in ["web dev", "frontend", "react"]):
+            return "Web Developer"
+        elif "marketing" in text and "analyst" in text:
+            return "Marketing Analyst"
+        elif "hr" in text and "analyst" in text:
+            return "HR Analyst"
         elif "analyst" in text:
-            return "Analyst"
+            return "Analyst" 
 
     return None
 
@@ -361,8 +475,10 @@ def enrich_experience_and_salary(job: Dict[str, Any]) -> Dict[str, Any]:
         exp_match = re.search(r"\b([0-2])\s*(?:-|to)\s*([1-2])\s*(?:years?|yrs?)\b", desc, re.I)
         if exp_match:
             exp = f"{exp_match.group(1)}-{exp_match.group(2)} Yrs"
-        elif any(w in (title + " " + desc).lower() for w in ["fresher", "entry level", "trainee", "intern"]):
-            exp = "Unspecified (entry-level marker only)"
+        elif any(w in (title + " " + desc).lower() for w in ["fresher", "fresh graduate", "campus hiring", "2024 passout", "2025 passout", "2026 passout"]):
+            exp = "0-1 Yrs (Fresher)"
+        elif any(w in title.lower() for w in ["junior", "trainee", "associate", "entry level", "entry-level"]):
+            exp = "0-1 Yrs (Junior / Trainee)"
         else:
             exp = "Not specified"
             
@@ -445,22 +561,41 @@ def evaluate_job(job: Dict[str, Any]) -> Dict[str, Any]:
     """
     Runs the complete evaluation suite on a single job record.
     Returns the enriched job record with validation flags.
+    Enforces that all fields (title, company, location, category, experience, apply URL)
+    are strictly valid and complete.
     """
     title = job.get("title")
     company = job.get("company")
+    location = job.get("location")
     date_posted = job.get("date_posted")
-    experience = job.get("experience_range")
     desc = job.get("description")
     level = job.get("job_level")
 
     # Run tests
     job = enrich_experience_and_salary(job)
     experience = job.get("experience_range")
+
     within_48h, date_reason = is_within_hours(date_posted, MAX_HOURS_OLD)
     fresher_ok, exp_reason = is_fresher_job(title, experience, desc, level)
     legit_ok, legit_reason = is_legitimate_company(company, title, desc)
+    loc_ok, loc_reason = is_valid_location(location)
 
-    is_valid = within_48h and fresher_ok and legit_ok
+    # Resolve apply URL
+    apply_url = resolve_apply_url(job)
+    job["apply_url"] = apply_url
+    has_valid_url = bool(apply_url and apply_url.startswith("http"))
+
+    # Strictly disallow "Not specified" / "Unspecified" experience
+    has_valid_exp = bool(experience and str(experience).strip().lower() not in {"not specified", "unspecified", "none", "nan"})
+
+    category = categorize_role(title, desc)
+    has_valid_cat = bool(category)
+    if not category:
+        category = "Unmatched Tech Role"
+
+    job["tech_category"] = category
+
+    is_valid = within_48h and fresher_ok and legit_ok and loc_ok and has_valid_cat and has_valid_url and has_valid_exp
     rejection_reasons = []
 
     if not within_48h:
@@ -469,20 +604,20 @@ def evaluate_job(job: Dict[str, Any]) -> Dict[str, Any]:
         rejection_reasons.append(exp_reason)
     if not legit_ok:
         rejection_reasons.append(legit_reason)
-
-    category = categorize_role(title, desc)
-    if not category:
-        is_valid = False
+    if not loc_ok:
+        rejection_reasons.append(loc_reason)
+    if not has_valid_cat:
         rejection_reasons.append("Role does not match a requested category (Business/Data/Marketing/HR Analyst, Analyst, Full Stack Developer, Web Developer)")
-        category = "Unmatched Tech Role"
-
-    job["tech_category"] = category
+    if not has_valid_url:
+        rejection_reasons.append("Missing valid HTTP/HTTPS apply URL")
+    if not has_valid_exp:
+        rejection_reasons.append("Experience could not be verified as strict 0-1 years")
 
     # Compute a quality confidence score (0-100)
     score = 60
     if job.get("min_amount") or job.get("max_amount"):
         score += 15
-    if job.get("job_url_direct") or (job.get("job_url") and "http" in str(job.get("job_url"))):
+    if has_valid_url:
         score += 10
     if job.get("emails"):
         score += 15

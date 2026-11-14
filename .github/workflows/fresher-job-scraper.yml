@@ -10,13 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       lookback_hours:
-        description: "Hours of job history to fetch (run 48 once for the initial fill)"
+        description: "Hours of job history to fetch (default: 20)"
         required: true
         type: choice
-        default: "48"
+        default: "20"
         options:
-          - "48"
           - "20"
+          - "48"
 
 permissions:
   contents: write
