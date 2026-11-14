@@ -33,6 +33,12 @@ jobs:
     env:
       GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
       GOOGLE_SERVICE_ACCOUNT_FILE: credentials.json
+      GOOGLE_JOBS_WORKSHEET: Sheet1
+      # LLM API Keys passed from GitHub Secrets
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_MODEL: "openai/gpt-oss-120b"
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: "nvidia/nemotron-3-ultra-550b-a55b:free"
 
     steps:
       - name: Verify Google Sheets secrets are configured
