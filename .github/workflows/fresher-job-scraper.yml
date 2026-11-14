@@ -71,9 +71,9 @@ jobs:
           Path("credentials.json").write_text(key, encoding="utf-8")
           PY
 
-      - name: Run scheduled 20-hour scrape and sync
-        if: github.event_name == 'schedule'
-        run: python -u main.py --hours 20
+      # - name: Run scheduled 20-hour scrape and sync
+      #   if: github.event_name == 'schedule'
+      #   run: python -u main.py --hours 20
 
       - name: Run requested initial/manual scrape and sync
         if: github.event_name == 'workflow_dispatch'
