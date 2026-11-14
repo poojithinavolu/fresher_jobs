@@ -288,7 +288,7 @@ def main():
     if valid_jobs:
         print("\n ⭐ SAMPLE VERIFIED FRESHER JOBS:")
         for idx, j in enumerate(valid_jobs[:5], 1):
-            url = j.get("job_url_direct") or j.get("job_url")
+            url = j.get("apply_url") or j.get("job_url_direct") or j.get("job_url")
             print(f"\n [{idx}] {j.get('title')} @ {j.get('company')}")
             print(f"     Source: {j.get('site')} | Role: {j.get('tech_category')} | City: {j.get('location')}")
             print(f"     Posted: {j.get('date_posted')} | Experience: {j.get('experience_range') or 'Fresher'}")
