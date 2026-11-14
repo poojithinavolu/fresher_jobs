@@ -61,6 +61,8 @@ def format_jobs_rows(jobs: List[Dict[str, Any]]) -> List[List[Any]]:
         apply_url = str(cell(j.get("apply_url") or j.get("job_url_direct") or j.get("job_url"))).strip()
         source = str(cell(j.get("site"))).upper()
         last_updated = datetime.now().isoformat(timespec="seconds")
+        skills = str(cell(j.get("skills_requirements") or j.get("required_skills") or j.get("job_requirement"))).strip()
+        interview_doc = str(cell(j.get("interview_doc_url") or "")).strip()
 
         # STRICT QUALITY GATEKEEPER:
         # Every single field must be present, valid, and complete before pushing to the Google Sheet.
@@ -75,7 +77,8 @@ def format_jobs_rows(jobs: List[Dict[str, Any]]) -> List[List[Any]]:
 
         rows.append([
             title, company, location, category, date_p, exp,
-            min_sal, max_sal, apply_url, source, last_updated
+            min_sal, max_sal, apply_url, source, last_updated,
+            skills, interview_doc
         ])
     return rows
 
@@ -110,7 +113,7 @@ def merge_job_rows(
     incoming_rows: List[List[Any]],
 ) -> List[List[Any]]:
     """Upsert incoming jobs by Apply URL, purging any corrupted/incomplete historical rows."""
-    width = 11
+    width = 13
     merged: List[List[Any]] = []
     row_index_by_key: Dict[tuple, int] = {}
 
@@ -150,7 +153,11 @@ def merge_job_rows(
             row_index_by_key[job_key] = len(merged)
             merged.append(row)
         else:
-            merged[existing_index] = row
+            if row[11]:
+                merged[existing_index][11] = row[11]
+            if row[12]:
+                merged[existing_index][12] = row[12]
+            merged[existing_index][10] = row[10]
     return merged
 
 def format_hr_rows(hr_leads: List[Dict[str, Any]]) -> List[List[Any]]:
@@ -248,32 +255,33 @@ def sync_to_live_google_sheet(
         job_headers = [[
             "Job Title", "Company", "Location", "Role", "Date Posted", "Experience",
             "Min Salary", "Max Salary", "Apply URL", "Source", "Last Updated",
+            "skills/responsibilities", "Interview QnA doc"
         ]]
         ws_jobs.update(
             values=job_headers,
-            range_name=f"A{header_row}:K{header_row}",
+            range_name=f"A{header_row}:M{header_row}",
         )
-        existing_rows = ws_jobs.get(f"A{data_start_row}:K")
+        existing_rows = ws_jobs.get(f"A{data_start_row}:M")
         merged_rows = merge_job_rows(existing_rows, jobs_rows)
-        ws_jobs.batch_clear([f"A{data_start_row}:K"])
+        ws_jobs.batch_clear([f"A{data_start_row}:M"])
         if merged_rows:
             last_row = data_start_row + len(merged_rows) - 1
             ws_jobs.update(
                 values=merged_rows,
-                range_name=f"A{data_start_row}:K{last_row}",
+                range_name=f"A{data_start_row}:M{last_row}",
             )
-        # Remove legacy columns after writing Last Updated into its retained K column.
+        # Remove legacy columns beyond column M (13th column).
         trailing_headers = [
             str(value).strip().casefold()
-            for value in ws_jobs.row_values(header_row)[11:17]
+            for value in ws_jobs.row_values(header_row)[13:19]
         ]
         legacy_columns = {
-            "score", "last updated", "job requirement", "fresher/exp",
+            "score", "job requirement", "fresher/exp",
             "passouts (2024/2025/2026)", "technology / skillset",
             "prior experience required",
         }
         if any(value in legacy_columns for value in trailing_headers):
-            ws_jobs.delete_columns(12, 17)
+            ws_jobs.delete_columns(14, 19)
         print(
             f"[✓] Direct Sync: Upserted {len(jobs_rows)} incoming jobs; "
             f"{len(merged_rows)} total rows in tab '{ws_jobs.title}'."

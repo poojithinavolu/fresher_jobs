@@ -331,6 +331,26 @@ def scrape_fresher_jobs(
         evaluated = evaluate_job(raw_job)
 
         if evaluated["is_valid_fresher_job"]:
+            # 5. Final LLM Gatekeeper & Skills Curator
+            try:
+                from llm_verifier import hydrate_job_description, verify_fresher_and_curate_skills
+                desc = hydrate_job_description(evaluated)
+                if desc:
+                    llm_eval = verify_fresher_and_curate_skills(
+                        description=desc,
+                        title=str(evaluated.get("title", "")),
+                        company=str(evaluated.get("company", ""))
+                    )
+                    if not llm_eval.get("is_fresher_eligible", True):
+                        evaluated["is_valid_fresher_job"] = False
+                        evaluated["rejection_reason"] = f"LLM Gatekeeper: {llm_eval.get('rejection_reason', 'Requires prior experience')}"
+                        rejected_jobs.append(evaluated)
+                        continue
+
+                    evaluated["skills_requirements"] = llm_eval.get("curated_skills", "")
+            except Exception as e:
+                logger.warning("LLM verification step skipped due to error: %s", e)
+
             valid_jobs.append(evaluated)
         else:
             rejected_jobs.append(evaluated)
