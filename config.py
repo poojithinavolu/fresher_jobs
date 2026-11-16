@@ -18,7 +18,22 @@ MAX_HOURS_OLD: int = 20
 
 # Target job boards (all 100% free; Naukri, Indeed, LinkedIn via JobSpy; Monster India via Foundit API)
 TARGET_SITES: List[str] = ["naukri", "indeed", "linkedin", "monsterindia"]
-UNSUPPORTED_SITES: List[str] = []
+
+# Off-campus & specialty fresher portals (100% free, no login or API keys required)
+OFFCAMPUS_SITES: List[str] = [
+    "unstop",
+    "elitmus",
+    "useastra",
+    "freshersdunia",
+    "freshershunt",
+    "campusdrive",
+    "jobs4fresher",
+    "joinsaarthi",
+]
+
+ALL_AVAILABLE_SITES: List[str] = TARGET_SITES + OFFCAMPUS_SITES
+UNSUPPORTED_SITES: List[str] = ["flexjobs", "imsjobs", "hirist", "iimjobs"]
+
 
 # Target locations (India)
 DEFAULT_LOCATIONS: List[str] = ["Mumbai", "Hyderabad"]

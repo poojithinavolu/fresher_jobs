@@ -183,6 +183,21 @@ def run_scraping_query(
                 )
                 return site, df, None
 
+            if site in {
+                "unstop", "elitmus", "useastra", "freshersdunia",
+                "freshershunt", "campusdrive", "jobs4fresher", "joinsaarthi",
+            }:
+                import off_campus_scrapers
+                fn = getattr(off_campus_scrapers, f"scrape_{site}_jobs", None)
+                if fn:
+                    items = fn(
+                        search_term=search_term,
+                        location=location,
+                        results_wanted=results_wanted,
+                    )
+                    df = pd.DataFrame(items) if items else pd.DataFrame()
+                    return site, df, None
+
             # fetch_description=False delivers sub-second search responses across all boards.
             # Naukri includes title, company, location, experienceText, date, and apply URL.
             # Indeed includes title, company, location, full HTML description, date, and apply URL.
@@ -312,6 +327,17 @@ def scrape_fresher_jobs(
     total_scraped = len(all_raw_jobs)
     logger.info(f"\nTotal raw jobs pulled across all queries: {total_scraped}")
 
+    # Cross-site deduplication and record merging
+    from dedup_engine import deduplicate_jobs
+    all_raw_jobs, dedup_stats = deduplicate_jobs(all_raw_jobs)
+    if dedup_stats["cross_site_duplicates"] > 0 or dedup_stats["url_duplicates"] > 0:
+        logger.info(
+            "Cross-site deduplication: %d raw jobs merged into %d unique opportunities (%d duplicates resolved)",
+            dedup_stats["total_input"],
+            dedup_stats["unique_output"],
+            dedup_stats["cross_site_duplicates"] + dedup_stats["url_duplicates"],
+        )
+
     # Process and filter each job
     valid_jobs: List[Dict[str, Any]] = []
     rejected_jobs: List[Dict[str, Any]] = []
@@ -366,7 +392,7 @@ def scrape_fresher_jobs(
         # 3. Hydrate description for candidate LinkedIn jobs that pass preliminary triage.
         # A short/empty description is exactly where LinkedIn hides the experience
         # requirement, so do not require a role-category match before hydrating.
-        if source == "linkedin" and len(safe_str(raw_job.get("description"))) < 150:
+        if "linkedin" in source and len(safe_str(raw_job.get("description"))) < 150:
             title_clean = safe_str(raw_job.get("title"))
             company_clean = safe_str(raw_job.get("company"))
             loc_clean = safe_str(raw_job.get("location"))

@@ -407,10 +407,12 @@ def is_fresher_job(
     has_fresher_desc = any(w in desc_str for w in [
         "fresher", "0-1 year", "0 to 1 year", "0-1 yr", "0 to 1 yr",
         "fresh graduate", "entry level", "trainee", "campus hiring",
-        "campus recruitment", "no prior experience", "zero experience",
+        "campus recruitment", "off campus drive", "off campus", "campus drive",
+        "no prior experience", "zero experience",
         "freshers can apply", "freshers welcome", "freshers eligible",
-        "2024 passout", "2025 passout", "2026 passout",
-        "2024 batch", "2025 batch", "2026 batch", "recent graduate"
+        "2024 passout", "2025 passout", "2026 passout", "2027 passout", "2028 passout",
+        "2024 batch", "2025 batch", "2026 batch", "2027 batch", "2028 batch",
+        "recent graduate"
     ])
 
     # Strict fresher ceiling: 1.0 year max across all roles and titles
